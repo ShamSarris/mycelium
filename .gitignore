@@ -4,10 +4,10 @@
 # you hold, not links a clone can follow.
 mycelium-baseline.md
 setup-instr.md
+infra/README.md
 tickets/
 future_work/
 CLAUDE.md
-infra/README.md
 
 node_modules/
 dist/

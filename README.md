@@ -97,9 +97,9 @@ Two Debian 13 VMs on a tailnet: an orchestrator running Postgres, Gitea and the 
 one or more workers running a supervisor, Docker and gVisor. Neither needs a public firewall rule —
 Tailscale makes its own connections outbound, and no service here binds a public interface.
 
-**[infra/README.md](infra/README.md)** is the runbook: the common base, the encrypted credentials,
-Postgres and Gitea, the systemd units, Tailscale Serve, registering a worker, Docker and gVisor,
-and `verify.sh` at each stage.
+[`infra/`](infra/) holds what a deployment needs: the systemd units, the Serve and Docker daemon
+configuration, the nightly backup timer, and `verify.sh`, which checks a host role by role. The
+runbook that walks through them in order is kept outside this repository, with the baseline.
 
 ## Operating it
 
