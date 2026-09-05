@@ -1,0 +1,19 @@
+[Unit]
+Description=Mycelium plan agents
+Documentation=https://github.com/sam/mycelium/blob/main/infra/README.md
+Before=slices.target
+
+[Slice]
+# Every plan agent runs in a transient scope inside this slice, started by
+# CgroupAgentRunner as `systemd-run --scope --slice=mycelium-plans
+# --unit=mycelium-plan-<id>`. That deterministic scope name is the only handle
+# a *restarted* supervisor has on an agent it did not start: without a slice
+# there is no scope, signalScope is a no-op, and an orphan survives until the
+# VM is rebooted (ticket 0004 gap 8, closed by this file).
+#
+# The ceilings are the whole VM's minus headroom for the supervisor and the
+# sandboxes beside them. One plan must not be able to starve either.
+MemoryMax=4G
+MemoryHigh=3G
+CPUQuota=200%
+TasksMax=2048

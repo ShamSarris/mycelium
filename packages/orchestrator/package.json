@@ -1,0 +1,33 @@
+{
+  "name": "@mycelium/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic control plane: plan validation, approval gate, DAG dispatcher, event sink.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "start": "node dist/src/index.js"
+  },
+  "dependencies": {
+    "@mycelium/contracts": "workspace:*",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.1",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "undici": "^7.2.0"
+  }
+}

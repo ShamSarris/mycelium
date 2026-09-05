@@ -1,0 +1,54 @@
+[Unit]
+Description=Mycelium node supervisor
+Documentation=https://github.com/sam/mycelium/blob/main/infra/README.md
+# Docker must be up before the sandbox broker can launch anything, and the
+# tailnet address must exist before the supervisor can bind it.
+After=network-online.target docker.service tailscaled.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=mycelium
+Group=mycelium
+SupplementaryGroups=docker
+WorkingDirectory=/opt/mycelium/packages/supervisor
+ExecStart=/usr/bin/node dist/src/index.js
+Restart=always
+RestartSec=5s
+
+# Baseline section 10. Comfortably above the 5 s plan-teardown grace (B15), so
+# systemd never kills the supervisor mid-teardown and leaves an environment for
+# restart reconciliation to find.
+TimeoutStopSec=30s
+
+EnvironmentFile=/etc/mycelium/supervisor.env
+
+# B13. The supervisor's own environment holds no secret, which is what makes it
+# safe for it to spawn a semi-trusted plan agent: there is nothing there to
+# inherit, and the agent gets exactly what provision.ts injects.
+LoadCredentialEncrypted=model_api_key:/etc/mycelium/creds/model_api_key.cred
+LoadCredentialEncrypted=supervisor_token:/etc/mycelium/creds/supervisor_token.cred
+
+# Plan checkouts, the broker and dispatch sockets, and the event spool.
+StateDirectory=mycelium
+StateDirectoryMode=0700
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mycelium
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Deliberately NOT under mycelium-plans.slice. That slice's ceilings exist to
+# stop one plan starving the supervisor beside it; putting the supervisor in it
+# would make them share the budget they are there to divide.
+Slice=system.slice
+
+[Install]
+WantedBy=multi-user.target

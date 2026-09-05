@@ -1,0 +1,24 @@
+# Local Postgres for development (host port 5433: another project already owns 5432) and for the orchestrator's integration tests.
+# The baseline pins PostgreSQL 17 (section 6), so tests run against the real engine
+# rather than an in-process substitute: FOR UPDATE SKIP LOCKED, LISTEN/NOTIFY, and
+# advisory locks all behave differently anywhere else.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: mycelium-postgres
+    environment:
+      POSTGRES_USER: mycelium
+      POSTGRES_PASSWORD: mycelium
+      POSTGRES_DB: mycelium
+    ports:
+      - '5433:5432'
+    volumes:
+      - mycelium-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mycelium -d mycelium']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  mycelium-pgdata:

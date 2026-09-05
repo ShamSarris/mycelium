@@ -1,0 +1,46 @@
+[Unit]
+Description=Mycelium orchestrator
+Documentation=https://github.com/sam/mycelium/blob/main/infra/README.md
+# Postgres is the only state store and migrations run at startup, so a start
+# before it is ready is a crash loop rather than a wait.
+After=network-online.target postgresql.service tailscaled.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=mycelium
+Group=mycelium
+WorkingDirectory=/opt/mycelium/packages/orchestrator
+ExecStart=/usr/bin/node dist/src/index.js
+Restart=always
+RestartSec=5s
+
+# Everything that is not a secret. A password-free DATABASE_URL lives here;
+# the password itself arrives as a credential below.
+EnvironmentFile=/etc/mycelium/orchestrator.env
+
+# B13: decrypted into $CREDENTIALS_DIRECTORY, never into the environment, so
+# they appear in no `systemctl show`, no /proc/<pid>/environ, and nothing a
+# child would inherit. The names are exactly what loadSecret() reads.
+LoadCredentialEncrypted=gitea_admin_token:/etc/mycelium/creds/gitea_admin_token.cred
+LoadCredentialEncrypted=postgres_password:/etc/mycelium/creds/postgres_password.cred
+
+# The service binds loopback only and reaches Postgres, Gitea and the
+# supervisors' tailnet addresses. It has no business anywhere else on this host.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

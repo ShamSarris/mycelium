@@ -1,0 +1,12 @@
+[Unit]
+Description=Mycelium nightly backup
+Documentation=https://github.com/sam/mycelium/blob/main/infra/README.md
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# A VM that was off at 03:30 still gets its backup rather than skipping a day.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

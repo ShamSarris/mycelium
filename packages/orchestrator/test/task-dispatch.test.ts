@@ -1,0 +1,450 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { tick } from '../src/services/dispatcher.js';
+import { buildTestApp, bearer, type TestHarness } from './helpers/app.js';
+import {
+  eventTypes,
+  heartbeat,
+  planState,
+  runningPlan,
+  singleTaskPlan,
+  taskState,
+  validPlan,
+  type RunningPlan,
+} from './helpers/fixtures.js';
+
+let h: TestHarness;
+
+beforeAll(async () => {
+  h = await buildTestApp();
+});
+
+afterAll(async () => {
+  await h.close();
+});
+
+beforeEach(async () => {
+  await h.reset();
+});
+
+function report(
+  running: RunningPlan,
+  taskId: string,
+  payload: Record<string, unknown>,
+  token = running.planToken,
+) {
+  return h.app.inject({
+    method: 'POST',
+    url: `/plans/${running.planId}/tasks/${taskId}/status`,
+    headers: bearer(token),
+    payload,
+  });
+}
+
+async function taskRow(taskId: string) {
+  const { rows } = await h.pool.query<{
+    state: string;
+    dispatch_id: string | null;
+    dispatch_attempt: number;
+    execution_attempt: number;
+    lease_expires_at: Date | null;
+    started_at: Date | null;
+    tokens_spent: number;
+    error: string | null;
+  }>(
+    `SELECT state::text AS state, dispatch_id, dispatch_attempt, execution_attempt,
+            lease_expires_at, started_at, tokens_spent, error
+       FROM tasks WHERE id = $1`,
+    [taskId],
+  );
+  return rows[0];
+}
+
+describe('claiming and dispatching', () => {
+  it('dispatches a ready task under a lease', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('dispatched');
+    expect(row?.dispatch_attempt).toBe(1);
+    expect(row?.lease_expires_at?.toISOString()).toBe(
+      new Date(h.clock.now().getTime() + 60_000).toISOString(),
+    );
+  });
+
+  it('sends the task dispatch with its dispatch id and limits', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+    const row = await taskRow(taskId);
+
+    const request = h.supervisors.taskDispatches[0]?.request;
+    expect(request?.task_id).toBe(taskId);
+    expect(request?.local_id).toBe('only');
+    expect(request?.dispatch_id).toBe(row?.dispatch_id);
+    expect(request?.execution_attempt).toBe(0);
+    expect(request?.description).toBe('Do the one thing.');
+    expect(request?.limits).toEqual({ tokens: 1000, wall_clock_min: 10 });
+    expect(request?.tokens_spent_so_far).toBe(0);
+  });
+
+  it('writes a task.dispatched event', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    expect(await eventTypes(h, running.planId)).toContain('task.dispatched');
+  });
+
+  it('honours max_concurrent_agents', async () => {
+    const plan = {
+      ...validPlan(),
+      max_concurrent_agents: 1,
+      tasks: [
+        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+      ],
+    };
+    await runningPlan(h, plan);
+    await tick(h.deps);
+
+    expect(h.supervisors.taskDispatches).toHaveLength(1);
+  });
+
+  it('dispatches up to the limit and no further', async () => {
+    const plan = {
+      ...validPlan(),
+      max_concurrent_agents: 2,
+      tasks: [
+        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+      ],
+    };
+    await runningPlan(h, plan);
+    expect(h.supervisors.taskDispatches).toHaveLength(2);
+  });
+
+  it('returns the task to ready at once when the supervisor call throws', async () => {
+    const supervisorPlan = singleTaskPlan();
+    h.supervisors.taskThrows = true;
+    const running = await runningPlan(h, supervisorPlan);
+    const taskId = running.taskIds['only'] as string;
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('ready');
+    expect(row?.lease_expires_at).toBeNull();
+    expect(row?.dispatch_id).toBeNull();
+  });
+
+  it('returns the task to ready when the supervisor declines it', async () => {
+    h.supervisors.taskAccepted = false;
+    const running = await runningPlan(h, singleTaskPlan());
+    expect(await taskState(h, running.taskIds['only'] as string)).toBe('ready');
+  });
+});
+
+describe('acknowledgement and completion', () => {
+  it('clears the lease when the agent reports running', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    const response = await report(running, taskId, { state: 'running' });
+    expect(response.statusCode).toBe(200);
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('running');
+    expect(row?.lease_expires_at).toBeNull();
+    expect(row?.started_at).not.toBeNull();
+  });
+
+  it('records tokens spent and the result on done', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    await report(running, taskId, {
+      state: 'done',
+      tokens_spent: 4321,
+      result: { commit: 'abc' },
+    });
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('done');
+    expect(row?.tokens_spent).toBe(4321);
+  });
+
+  it('promotes a dependant once its dependency is done', async () => {
+    const running = await runningPlan(h);
+    const first = running.taskIds['a-write-tests'] as string;
+    const second = running.taskIds['b-implement'] as string;
+
+    expect(await taskState(h, second)).toBe('pending');
+
+    await report(running, first, { state: 'running' });
+    await report(running, first, { state: 'done' });
+
+    expect(await taskState(h, second)).toBe('ready');
+
+    await tick(h.deps);
+    expect(await taskState(h, second)).toBe('dispatched');
+  });
+
+  it('refuses a done report from a task that never acknowledged', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const response = await report(running, running.taskIds['only'] as string, { state: 'done' });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe('illegal_transition');
+  });
+});
+
+describe('lease expiry', () => {
+  it('returns an unacknowledged task to ready and logs it', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    h.clock.advance(61_000);
+    await tick(h.deps);
+
+    expect(await eventTypes(h, running.planId)).toContain('task.lease_expired');
+    // The same tick re-dispatches it, which is the behaviour that matters.
+    expect(h.supervisors.taskDispatches).toHaveLength(2);
+    expect((await taskRow(taskId))?.dispatch_attempt).toBe(2);
+  });
+
+  it('does not expire a lease that is still live', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    h.clock.advance(30_000);
+    await tick(h.deps);
+
+    expect(await eventTypes(h, running.planId)).not.toContain('task.lease_expired');
+    expect(h.supervisors.taskDispatches).toHaveLength(1);
+  });
+
+  it('does not expire a task that acknowledged in time', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    await report(running, running.taskIds['only'] as string, { state: 'running' });
+
+    h.clock.advance(120_000);
+    await heartbeat(h, running.supervisor.id);
+    await tick(h.deps);
+
+    expect(await eventTypes(h, running.planId)).not.toContain('task.lease_expired');
+  });
+});
+
+describe('failure policy', () => {
+  it('retries a task whose policy allows another attempt', async () => {
+    const running = await runningPlan(
+      h,
+      singleTaskPlan({
+        tasks: [
+          {
+            id: 'only',
+            description: 'flaky',
+            limits: { tokens: 10, wall_clock_min: 5 },
+            failure_policy: { type: 'retry', max_attempts: 2 },
+          },
+        ],
+      }),
+    );
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    await report(running, taskId, { state: 'failed', error: 'first attempt failed' });
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('ready');
+    expect(row?.execution_attempt).toBe(1);
+    expect(await planState(h, running.planId)).toBe('running');
+  });
+
+  it('fails the task once the attempts are exhausted', async () => {
+    const running = await runningPlan(
+      h,
+      singleTaskPlan({
+        tasks: [
+          {
+            id: 'only',
+            description: 'flaky',
+            limits: { tokens: 10, wall_clock_min: 5 },
+            failure_policy: { type: 'retry', max_attempts: 2 },
+          },
+        ],
+      }),
+    );
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    await report(running, taskId, { state: 'failed', error: 'one' });
+    await tick(h.deps);
+    await report(running, taskId, { state: 'running' });
+    await report(running, taskId, { state: 'failed', error: 'two' });
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('failed');
+    expect(row?.execution_attempt).toBe(2);
+  });
+
+  it('carries the prior token spend into the retry dispatch', async () => {
+    const running = await runningPlan(
+      h,
+      singleTaskPlan({
+        tasks: [
+          {
+            id: 'only',
+            description: 'flaky',
+            limits: { tokens: 100, wall_clock_min: 5 },
+            failure_policy: { type: 'retry', max_attempts: 3 },
+          },
+        ],
+      }),
+    );
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    await report(running, taskId, { state: 'failed', error: 'one', tokens_spent: 40 });
+    await tick(h.deps);
+
+    const second = h.supervisors.taskDispatches[1]?.request;
+    expect(second?.execution_attempt).toBe(1);
+    expect(second?.tokens_spent_so_far).toBe(40);
+  });
+
+  it('halts the plan and cancels the siblings when the policy is halt', async () => {
+    const plan = {
+      ...validPlan(),
+      max_concurrent_agents: 2,
+      tasks: [
+        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+      ],
+    };
+    const running = await runningPlan(h, plan);
+    const a = running.taskIds['a'] as string;
+
+    await report(running, a, { state: 'running' });
+    await report(running, a, { state: 'failed', error: 'unrecoverable' });
+
+    expect(await taskState(h, a)).toBe('failed');
+    expect(await taskState(h, running.taskIds['b'] as string)).toBe('cancelled');
+    expect(await taskState(h, running.taskIds['c'] as string)).toBe('cancelled');
+    expect(await planState(h, running.planId)).toBe('finalizing');
+  });
+});
+
+describe('the wall-clock sweep', () => {
+  it('fails a running task that passes its cap plus the grace period', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    // 10 minute cap plus the 2 minute grace.
+    h.clock.advanceMinutes(13);
+    await heartbeat(h, running.supervisor.id);
+    await tick(h.deps);
+
+    const row = await taskRow(taskId);
+    expect(row?.state).toBe('failed');
+    expect(row?.error).toBe('wall_clock_exceeded');
+    expect(await eventTypes(h, running.planId)).toContain('limit.exceeded');
+  });
+
+  it('leaves a task inside its cap alone', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    await report(running, taskId, { state: 'running' });
+    h.clock.advanceMinutes(11);
+    await heartbeat(h, running.supervisor.id);
+    await tick(h.deps);
+
+    expect(await taskState(h, taskId)).toBe('running');
+  });
+});
+
+describe('status route authorisation', () => {
+  it('refuses a task belonging to another plan', async () => {
+    const first = await runningPlan(h, singleTaskPlan());
+    const second = await runningPlan(h, {
+      ...singleTaskPlan(),
+      project: { name: 'other' },
+    });
+
+    const response = await h.app.inject({
+      method: 'POST',
+      url: `/plans/${first.planId}/tasks/${second.taskIds['only']}/status`,
+      headers: bearer(first.planToken),
+      payload: { state: 'running' },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('refuses a plan id that the token does not cover', async () => {
+    const first = await runningPlan(h, singleTaskPlan());
+    const second = await runningPlan(h, {
+      ...singleTaskPlan(),
+      project: { name: 'other' },
+    });
+
+    const response = await h.app.inject({
+      method: 'POST',
+      url: `/plans/${second.planId}/tasks/${second.taskIds['only']}/status`,
+      headers: bearer(first.planToken),
+      payload: { state: 'running' },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('refuses a token whose plan is no longer running', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    await h.pool.query("UPDATE plans SET state = 'cancelled' WHERE id = $1", [running.planId]);
+
+    const response = await report(running, running.taskIds['only'] as string, { state: 'running' });
+    expect(response.statusCode).toBe(409);
+  });
+
+  it('refuses an unknown token', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const response = await report(running, running.taskIds['only'] as string, { state: 'running' }, 'nonsense');
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('rejects a malformed report', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const response = await report(running, running.taskIds['only'] as string, { state: 'sleeping' });
+    expect(response.statusCode).toBe(400);
+  });
+});
+
+describe('concurrent ticks', () => {
+  it('claim disjoint tasks, so no task is dispatched twice', async () => {
+    const plan = {
+      ...validPlan(),
+      max_concurrent_agents: 4,
+      tasks: [
+        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'd', description: 'four', limits: { tokens: 10, wall_clock_min: 5 } },
+      ],
+    };
+    // Provision without dispatching, so both ticks race for all four tasks.
+    h.supervisors.taskThrows = true;
+    const running = await runningPlan(h, plan);
+    h.supervisors.taskThrows = false;
+
+    await h.pool.query(
+      "UPDATE tasks SET state = 'ready', dispatch_id = NULL, lease_expires_at = NULL WHERE plan_id = $1",
+      [running.planId],
+    );
+    h.supervisors.taskDispatches.length = 0;
+
+    await Promise.all([tick(h.deps), tick(h.deps)]);
+
+    const dispatched = h.supervisors.taskDispatches.map((d) => d.request.task_id);
+    expect(dispatched).toHaveLength(4);
+    expect(new Set(dispatched).size).toBe(4);
+  });
+});

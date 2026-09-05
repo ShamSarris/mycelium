@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycelium.local/schemas/plan.schema.json",
+  "title": "Plan",
+  "description": "A unit of approved work. Authored by the local planning client, re-validated by the orchestrator at submission. Baseline v0.1 section 6.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["goal", "project", "assumptions", "env", "tasks", "success_criteria"],
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "What this plan is for, in the operator's words."
+    },
+    "project": {
+      "$ref": "#/$defs/projectRef"
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+      "description": "Echoed to the operator at the approval gate. At least one is mandatory (goal G2)."
+    },
+    "non_goals": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+      "default": []
+    },
+    "env": {
+      "enum": ["dev", "prod"],
+      "description": "Selects the target worker VM for the whole plan."
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/task" }
+    },
+    "success_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/successCriterion" },
+      "description": "Declarative checks evaluated by the orchestrator at finalize."
+    },
+    "egress": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/egressHost" },
+      "default": [],
+      "description": "Hostnames this plan's sandboxes may reach through the supervisor proxy, on top of the standing set (Gitea, package registries). Plan-scoped, shown at the approval gate, and cannot widen after approval. Empty means deny everything outside the standing set."
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Ceiling on the tokens this whole plan may spend, across every task and every execution attempt. Omitted means the sum of the task ceilings, which is what the plan already implies; naming it is how you ask for less. The orchestrator halts the plan rather than dispatching a task that would cross it."
+    },
+    "max_concurrent_agents": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4,
+      "default": 2
+    },
+    "env_ttl_min": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440,
+      "default": 240,
+      "description": "Wall-clock lifetime of the plan environment before the supervisor tears it down."
+    }
+  },
+  "$defs": {
+    "projectRef": {
+      "description": "An existing project by id, or a new project by name.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "format": "uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+              "description": "Also the Gitea repository name, so it is slug-shaped."
+            }
+          }
+        }
+      ]
+    },
+    "egressHost": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$",
+      "description": "A lowercase hostname, optionally prefixed with `*.` to cover subdomains. No scheme, port, or path: the proxy matches on the CONNECT host and allows 80/443 only."
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "description": "Plan-local identifier. Distinct from the database UUID assigned at submission."
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "limits"],
+      "properties": {
+        "id": { "$ref": "#/$defs/taskId" },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Plain text. v1 carries no typed context capsule; large inputs live in the repo."
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/taskId" },
+          "default": []
+        },
+        "limits": { "$ref": "#/$defs/limits" },
+        "failure_policy": {
+          "$ref": "#/$defs/failurePolicy",
+          "default": { "type": "halt" }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokens", "wall_clock_min"],
+      "properties": {
+        "tokens": { "type": "integer", "minimum": 1, "maximum": 500000 },
+        "wall_clock_min": { "type": "integer", "minimum": 1, "maximum": 120 }
+      }
+    },
+    "failurePolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "max_attempts"],
+          "properties": {
+            "type": { "const": "retry" },
+            "max_attempts": { "type": "integer", "minimum": 1, "maximum": 5 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "halt" }
+          }
+        }
+      ]
+    },
+    "successCriterion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "all_tasks_done" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path"],
+          "properties": {
+            "type": { "const": "file_exists_in_branch" },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*\\.\\.).+$",
+              "description": "Repo-relative path in plan/<id>. No leading slash, no parent traversal."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

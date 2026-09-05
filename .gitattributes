@@ -1,0 +1,10 @@
+# Anything that runs on a Linux VM must arrive with LF endings. A shell script
+# checked out with CRLF fails as `bad interpreter: /usr/bin/env bash^M`, and a
+# systemd unit with CRLF fails in less obvious ways still.
+*.sh            text eol=lf
+*.mjs           text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+*.slice         text eol=lf
+infra/**        text eol=lf
+migrations/*.sql text eol=lf

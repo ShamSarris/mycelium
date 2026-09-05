@@ -1,0 +1,29 @@
+{
+  "name": "@mycelium/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plan agent: host-owned agent loop, sandbox RPC client, tool registry, event pipeline.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "start": "node dist/src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
+    "@mycelium/contracts": "workspace:*",
+    "ajv": "^8.17.1",
+    "undici": "^7.2.0"
+  }
+}

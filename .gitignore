@@ -1,0 +1,16 @@
+# Documentation kept local. This repository is public; the design reasoning,
+# the build tickets and the earlier drafts are not. Prose in the tracked READMEs
+# still cites them by name — those are references to documents you hold, not
+# links a clone can follow.
+mycelium-baseline.md
+tickets/
+future_work/
+CLAUDE.md
+
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store

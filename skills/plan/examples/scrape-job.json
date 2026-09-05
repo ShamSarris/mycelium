@@ -1,0 +1,58 @@
+{
+  "goal": "The repository holds a dated snapshot of the pricing pages of five hosting providers, plus a written comparison of what changed since the last snapshot.",
+  "project": { "name": "hosting-price-watch" },
+  "assumptions": [
+    "High confidence: all five pricing pages render their prices in the initial HTML rather than loading them with JavaScript. If wrong, the fetch task returns pages with no prices in them and should fail saying so, rather than committing empty files that look like a successful run.",
+    "Medium confidence: the previous snapshot in data/ is recent enough for a comparison to be interesting. If wrong, the comparison is thin but still correct.",
+    "Low confidence: none of the five will rate-limit a single sequential pass. If wrong, the fetch task fails on a 429 and the retry gives it a second chance before the plan halts."
+  ],
+  "non_goals": [
+    "Do not follow links beyond the five pricing pages listed in the first task.",
+    "Do not attempt to bypass a rate limit, a CAPTCHA, or a robots directive - if a site declines, record that it declined and move on.",
+    "Do not delete or rewrite any previous snapshot; this plan only adds one.",
+    "Do not add a headless browser dependency."
+  ],
+  "env": "dev",
+  "tasks": [
+    {
+      "id": "fetch",
+      "description": "Fetch the pricing pages of the five providers listed below and write each one verbatim to data/<today>/<provider>.html, creating the directory. Providers: vultr.com/pricing, hetzner.com/cloud, digitalocean.com/pricing/droplets, linode.com/pricing, scaleway.com/en/pricing. Go one at a time with a pause between requests; this is a courtesy pass, not a crawl. If a site returns 4xx or serves no prices in the HTML, write what came back and note it in the task result rather than retrying it into a block. Commit and push. Rollback: this task only adds files under data/<today>/, so undoing it is deleting that directory.",
+      "depends_on": [],
+      "limits": { "tokens": 60000, "wall_clock_min": 30 },
+      "failure_policy": { "type": "retry", "max_attempts": 2 }
+    },
+    {
+      "id": "extract",
+      "description": "Parse each file in data/<today>/ into a row of provider, plan name, monthly price, vCPU, RAM and transfer, and write them all to data/<today>/prices.csv. Where a page could not be parsed, emit a row naming the provider with empty fields rather than dropping it - a missing provider in the output should be visible, not silent. Commit and push.",
+      "depends_on": ["fetch"],
+      "limits": { "tokens": 80000, "wall_clock_min": 30 },
+      "failure_policy": { "type": "halt" }
+    },
+    {
+      "id": "compare",
+      "description": "Compare data/<today>/prices.csv against the most recent previous snapshot in data/ and write findings.md: what changed, what is new, what disappeared, and anything that looks like a parsing artefact rather than a real price change. If there is no previous snapshot, say so and describe the current spread instead. Commit and push.",
+      "depends_on": ["extract"],
+      "limits": { "tokens": 60000, "wall_clock_min": 25 },
+      "failure_policy": { "type": "halt" }
+    }
+  ],
+  "success_criteria": [
+    { "type": "all_tasks_done" },
+    { "type": "file_exists_in_branch", "path": "findings.md" }
+  ],
+  "egress": [
+    "vultr.com",
+    "www.vultr.com",
+    "hetzner.com",
+    "www.hetzner.com",
+    "digitalocean.com",
+    "www.digitalocean.com",
+    "linode.com",
+    "www.linode.com",
+    "scaleway.com",
+    "www.scaleway.com"
+  ],
+  "max_tokens": 220000,
+  "max_concurrent_agents": 1,
+  "env_ttl_min": 180
+}

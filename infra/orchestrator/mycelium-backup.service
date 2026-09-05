@@ -1,0 +1,24 @@
+[Unit]
+Description=Mycelium nightly backup
+Documentation=https://github.com/sam/mycelium/blob/main/infra/README.md
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=mycelium
+Group=mycelium
+
+# Baseline section 10: a nightly pg_dump and a Gitea dump, copied off-VM.
+# Neither carries a plaintext secret - Postgres holds only token hashes, and
+# the credential blobs stay on their VM and are restored from the operator's
+# password manager.
+ExecStart=/usr/local/bin/mycelium-backup.sh
+
+LoadCredentialEncrypted=postgres_password:/etc/mycelium/creds/postgres_password.cred
+EnvironmentFile=/etc/mycelium/orchestrator.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/mycelium

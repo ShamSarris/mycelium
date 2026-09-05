@@ -1,0 +1,43 @@
+{
+  "goal": "The orchestrator exposes GET /healthz returning its build SHA and database connectivity, covered by tests.",
+  "project": { "name": "mycelium" },
+  "assumptions": [
+    "High confidence: the orchestrator already has a Fastify instance and a registered route module. If wrong, the first task discovers it and fails cheaply rather than the whole plan going sideways.",
+    "Medium confidence: a plain SELECT 1 is enough to call the database healthy. If wrong, the endpoint reports healthy during a partial outage - annoying, not dangerous, and the second task's test would still pass.",
+    "Low confidence: no existing route answers /healthz. If wrong, the first task will find the collision and should fail rather than overwrite it."
+  ],
+  "non_goals": [
+    "Do not add authentication to the endpoint; it is reachable only over the tailnet.",
+    "Do not add a metrics or tracing dependency.",
+    "Do not change any existing route."
+  ],
+  "env": "dev",
+  "tasks": [
+    {
+      "id": "failing-test",
+      "description": "Write a failing test for GET /healthz in packages/orchestrator/test/. It should assert a 200 with a JSON body carrying a build SHA and a database-reachable boolean. Do not implement the route yet - the test must fail for the right reason, which is that the route does not exist. Commit and push.",
+      "depends_on": [],
+      "limits": { "tokens": 40000, "wall_clock_min": 15 },
+      "failure_policy": { "type": "halt" }
+    },
+    {
+      "id": "implement",
+      "description": "Implement GET /healthz so the test from the previous task passes. Read the build SHA from the GIT_SHA environment variable, defaulting to \"unknown\". Check the database with SELECT 1 and report reachability rather than throwing - a health endpoint that 500s when the database is down tells you less than one that answers. Commit and push.",
+      "depends_on": ["failing-test"],
+      "limits": { "tokens": 60000, "wall_clock_min": 20 },
+      "failure_policy": { "type": "halt" }
+    },
+    {
+      "id": "full-suite",
+      "description": "Run the whole workspace test suite and the typecheck. If anything unrelated broke, fix it or report clearly what broke and why, rather than adjusting the test to pass. Commit and push.",
+      "depends_on": ["implement"],
+      "limits": { "tokens": 40000, "wall_clock_min": 20 },
+      "failure_policy": { "type": "retry", "max_attempts": 2 }
+    }
+  ],
+  "success_criteria": [{ "type": "all_tasks_done" }],
+  "egress": [],
+  "max_tokens": 140000,
+  "max_concurrent_agents": 1,
+  "env_ttl_min": 120
+}

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Tailscale Serve is the ONLY ingress to the orchestrator - for supervisors as well as for the operator.",
+    "The process binds 127.0.0.1 and nothing else, so nothing is on a public interface and the operator",
+    "routes are unreachable from the tailnet rather than merely refused.",
+    "",
+    "Serve strips any client-supplied Tailscale-User-* header and injects its own. That is the whole basis",
+    "on which requireOperator trusts the identity, and it is only sound because the listener cannot be",
+    "reached any other way. Verify it before relying on it - infra/verify.sh does.",
+    "",
+    "Funnel is never enabled here. Funnel traffic is public and carries no identity headers at all,",
+    "so it would arrive at a loopback listener as an unauthenticated request from Serve.",
+    "",
+    "Apply with:  tailscale serve set --config /etc/mycelium/serve.json",
+    "Check with:  tailscale serve status"
+  ],
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "${TS_HOSTNAME}:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8080"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {}
+}

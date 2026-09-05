@@ -1,0 +1,15 @@
+{
+  "_comment": "Registers gVisor as a Docker runtime. The supervisor's DockerGvisorDriver passes --runtime=runsc on every sandbox launch, so without this every sandbox fails at first use - inside a plan, which is the worst place to find out. Verified by infra/verify.sh.",
+  "runtimes": {
+    "runsc": {
+      "path": "/usr/bin/runsc"
+    }
+  },
+  "default-runtime": "runc",
+  "live-restore": true,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
