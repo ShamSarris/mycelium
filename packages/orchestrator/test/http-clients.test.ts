@@ -168,7 +168,9 @@ describe('HttpGiteaClient', () => {
     expect(result.clone_url).toBe('http://gitea.test/mycelium/demo.git');
   });
 
-  it('creates a repo with an initial commit when it is absent', async () => {
+  // The create path must name the same owner the lookup reads back, or a repo is
+  // created once under whoever holds the admin token and never found again.
+  it('creates a repo under the configured owner when it is absent', async () => {
     let body = '';
     agent
       .get(GITEA_ORIGIN)
@@ -176,7 +178,7 @@ describe('HttpGiteaClient', () => {
       .reply(404, { message: 'not found' });
     agent
       .get(GITEA_ORIGIN)
-      .intercept({ path: '/api/v1/user/repos', method: 'POST' })
+      .intercept({ path: '/api/v1/orgs/mycelium/repos', method: 'POST' })
       .reply(201, (options) => {
         body = String(options.body);
         return { clone_url: 'http://gitea.test/mycelium/demo.git' };
@@ -185,6 +187,25 @@ describe('HttpGiteaClient', () => {
     await client().ensureRepo('demo');
     // Without auto_init there is no branch point for plan/<id>.
     expect(JSON.parse(body)).toMatchObject({ name: 'demo', auto_init: true, private: true });
+  });
+
+  it('creates under the owner it was configured with, not a fixed one', async () => {
+    const configured = new HttpGiteaClient({
+      baseUrl: GITEA_ORIGIN,
+      owner: 'other-org',
+      adminToken: 'admin-token',
+    });
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/repos/other-org/demo', method: 'GET' })
+      .reply(404, { message: 'not found' });
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/orgs/other-org/repos', method: 'POST' })
+      .reply(201, { clone_url: 'http://gitea.test/other-org/demo.git' });
+
+    const result = await configured.ensureRepo('demo');
+    expect(result.clone_url).toBe('http://gitea.test/other-org/demo.git');
   });
 
   it('sends the admin token', async () => {

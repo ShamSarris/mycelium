@@ -29,6 +29,7 @@ export interface GiteaClient {
 
 export interface GiteaConfig {
   baseUrl: string;
+  /** A Gitea organisation, administered by the account `adminToken` belongs to. */
   owner: string;
   adminToken: string;
 }
@@ -100,7 +101,12 @@ export class HttpGiteaClient implements GiteaClient {
       throw new GiteaError(`lookup of ${name} returned ${existing.status}`, existing.status);
     }
 
-    const created = (await this.expectOk('POST', '/user/repos', {
+    // Named-owner create, not `POST /user/repos`: that one places the repo under
+    // whoever holds the admin token, while every other call here addresses
+    // `/repos/${owner}/...`. When those differ, a project repo is created on every
+    // propose and found by none of them. `owner` is therefore a Gitea organisation
+    // the token's user administers, not the token's user.
+    const created = (await this.expectOk('POST', `/orgs/${this.config.owner}/repos`, {
       name,
       private: true,
       // Without an initial commit there is no branch point for plan/<id>.

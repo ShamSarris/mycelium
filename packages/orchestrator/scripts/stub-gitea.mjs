@@ -36,10 +36,14 @@ const server = createServer((req, res) => {
     return send(res, 200, { clone_url: `http://localhost:${port}/${owner}/${repo}.git` });
   }
 
-  if (path === '/api/v1/user/repos' && req.method === 'POST') {
+  // POST /api/v1/orgs/{org}/repos - the client creates under a named owner, so the
+  // clone_url it gets back is the one the lookup above will answer with later.
+  match = /^\/api\/v1\/orgs\/([^/]+)\/repos$/.exec(path);
+  if (match && req.method === 'POST') {
+    const [, org] = match;
     return readJson(req, (body) => {
       repos.add(body.name);
-      send(res, 201, { clone_url: `http://localhost:${port}/mycelium/${body.name}.git` });
+      send(res, 201, { clone_url: `http://localhost:${port}/${org}/${body.name}.git` });
     });
   }
 
