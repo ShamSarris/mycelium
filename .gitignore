@@ -1,8 +1,9 @@
-# Documentation kept local. This repository is public; the design reasoning,
-# the build tickets and the earlier drafts are not. Prose in the tracked READMEs
-# still cites them by name — those are references to documents you hold, not
-# links a clone can follow.
+# Documentation kept local. This repository is public; the design reasoning, the
+# build tickets, the earlier drafts and the bring-up instructions are not. Prose
+# in the tracked READMEs cites them by name — those are references to documents
+# you hold, not links a clone can follow.
 mycelium-baseline.md
+setup-instr.md
 tickets/
 future_work/
 CLAUDE.md
