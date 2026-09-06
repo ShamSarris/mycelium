@@ -86,22 +86,31 @@ function toProviderMessage(message: {
 }): Anthropic.MessageParam {
   return {
     role: message.role,
-    content: message.content.map((block): Anthropic.ContentBlockParam => {
+    // flatMap rather than map: a thinking block that cannot be replayed exactly
+    // as it arrived is dropped here rather than sent. The provider requires them
+    // back unmodified and answers a modified one with a 400 that kills the task,
+    // whereas a turn missing its thinking is only a turn missing its thinking.
+    content: message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
       switch (block.type) {
         case 'text':
-          return { type: 'text', text: block.text };
+          return [{ type: 'text', text: block.text }];
         case 'thinking':
-          // Echoed back unchanged when continuing on the same model.
-          return { type: 'thinking', thinking: block.thinking, signature: '' };
+          return replayable(block)
+            ? [{ type: 'thinking', thinking: block.thinking, signature: block.signature }]
+            : [];
+        case 'redacted_thinking':
+          return [{ type: 'redacted_thinking', data: block.data }];
         case 'tool_use':
-          return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+          return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }];
         case 'tool_result':
-          return {
-            type: 'tool_result',
-            tool_use_id: block.toolUseId,
-            content: block.content,
-            is_error: block.isError,
-          };
+          return [
+            {
+              type: 'tool_result',
+              tool_use_id: block.toolUseId,
+              content: block.content,
+              is_error: block.isError,
+            },
+          ];
       }
     }),
   };
@@ -112,7 +121,14 @@ function toHostBlock(block: Anthropic.ContentBlock): ContentBlock | null {
     case 'text':
       return { type: 'text', text: block.text };
     case 'thinking':
-      return { type: 'thinking', thinking: block.thinking };
+      // Dropped at the boundary when it could never be replayed, so the
+      // conversation never holds a block that would fail on the next turn.
+      // Adaptive thinking does return blocks with no text.
+      return replayable(block)
+        ? { type: 'thinking', thinking: block.thinking, signature: block.signature }
+        : null;
+    case 'redacted_thinking':
+      return { type: 'redacted_thinking', data: block.data };
     case 'tool_use':
       // The SDK has already parsed this. Never string-match the serialised
       // form: escaping varies between models and between turns.
@@ -127,6 +143,15 @@ function toHostBlock(block: Anthropic.ContentBlock): ContentBlock | null {
       // guessed at; nothing above this file declares a server tool.
       return null;
   }
+}
+
+/**
+ * A thinking block is worth carrying only if it can go back exactly as it came.
+ * Both halves are required: the text, because the provider rejects an empty one
+ * outright, and the signature, because it is what proves the block is Claude's.
+ */
+function replayable(block: { thinking: string; signature: string }): boolean {
+  return block.thinking !== '' && block.signature !== '';
 }
 
 function toStopReason(reason: string | null): StopReason {

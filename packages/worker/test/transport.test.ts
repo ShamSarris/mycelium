@@ -74,7 +74,46 @@ function stream(options: StreamOptions = {}): string {
   ];
 
   blocks.forEach((block, index) => {
-    if (block.type === 'tool_use') {
+    if (block.type === 'thinking') {
+      // The signature arrives in its own delta, after the text. A block whose
+      // thinking_delta never comes is the empty-thinking case the provider
+      // rejects on replay.
+      events.push([
+        'content_block_start',
+        {
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
+        },
+      ]);
+      if (block.thinking !== '') {
+        events.push([
+          'content_block_delta',
+          {
+            type: 'content_block_delta',
+            index,
+            delta: { type: 'thinking_delta', thinking: block.thinking },
+          },
+        ]);
+      }
+      events.push([
+        'content_block_delta',
+        {
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'signature_delta', signature: block.signature },
+        },
+      ]);
+    } else if (block.type === 'redacted_thinking') {
+      events.push([
+        'content_block_start',
+        {
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'redacted_thinking', data: block.data },
+        },
+      ]);
+    } else if (block.type === 'tool_use') {
       events.push([
         'content_block_start',
         {
@@ -313,6 +352,132 @@ describe('the response it normalizes', () => {
     const response = await transport().send(request(), new AbortController().signal);
 
     expect(response.stopReason).toBe('max_tokens');
+  });
+});
+
+/**
+ * The provider requires thinking blocks back "unmodified and in their original
+ * order; a modified block results in a 400 invalid_request_error". Nothing else
+ * in the suite replays an assistant turn that thought, which is how a forged
+ * signature and an empty thinking string both reached production.
+ */
+describe('thinking blocks', () => {
+  it('keeps the signature, which the provider requires back intact', async () => {
+    intercept(stream({ blocks: [{ type: 'thinking', thinking: 'weighing it up', signature: 'sig-abc' }] }));
+
+    const response = await transport().send(request(), new AbortController().signal);
+
+    expect(response.content).toEqual([
+      { type: 'thinking', thinking: 'weighing it up', signature: 'sig-abc' },
+    ]);
+  });
+
+  it('keeps a redacted thinking block, which is also passed back unchanged', async () => {
+    intercept(stream({ blocks: [{ type: 'redacted_thinking', data: 'enc-xyz' }] }));
+
+    const response = await transport().send(request(), new AbortController().signal);
+
+    expect(response.content).toEqual([{ type: 'redacted_thinking', data: 'enc-xyz' }]);
+  });
+
+  it('drops a thinking block with no text rather than carrying one that cannot be replayed', async () => {
+    intercept(
+      stream({
+        blocks: [
+          { type: 'thinking', thinking: '', signature: 'sig-abc' },
+          { type: 'text', text: 'done' },
+        ],
+      }),
+    );
+
+    const response = await transport().send(request(), new AbortController().signal);
+
+    // Adaptive thinking can return one of these. Kept, it becomes a 400 on the
+    // next turn - "each thinking block must contain thinking" - and the task
+    // dies on its second assistant turn.
+    expect(response.content).toEqual([{ type: 'text', text: 'done' }]);
+  });
+
+  it('echoes a thinking block back exactly as it arrived', async () => {
+    let sent: Record<string, unknown> | null = null;
+    intercept(stream(), (payload) => {
+      sent = payload;
+    });
+
+    await transport().send(
+      request({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'go' }] },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'weighing it up', signature: 'sig-abc' },
+              { type: 'tool_use', id: 'tu-1', name: 'read_file', input: { path: 'a.ts' } },
+            ],
+          },
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', toolUseId: 'tu-1', content: 'ok', isError: false }],
+          },
+        ],
+      }),
+      new AbortController().signal,
+    );
+
+    const messages = sent!.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(messages[1]!.content[0]).toEqual({
+      type: 'thinking',
+      thinking: 'weighing it up',
+      signature: 'sig-abc',
+    });
+  });
+
+  it('echoes a redacted thinking block back unchanged', async () => {
+    let sent: Record<string, unknown> | null = null;
+    intercept(stream(), (payload) => {
+      sent = payload;
+    });
+
+    await transport().send(
+      request({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'go' }] },
+          { role: 'assistant', content: [{ type: 'redacted_thinking', data: 'enc-xyz' }] },
+        ],
+      }),
+      new AbortController().signal,
+    );
+
+    const messages = sent!.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(messages[1]!.content[0]).toEqual({ type: 'redacted_thinking', data: 'enc-xyz' });
+  });
+
+  it('omits an unreplayable thinking block rather than sending a malformed one', async () => {
+    let sent: Record<string, unknown> | null = null;
+    intercept(stream(), (payload) => {
+      sent = payload;
+    });
+
+    await transport().send(
+      request({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'go' }] },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: '', signature: '' },
+              { type: 'text', text: 'done' },
+            ],
+          },
+        ],
+      }),
+      new AbortController().signal,
+    );
+
+    // The backstop for a block that reached the conversation anyway. Sending it
+    // is the 400 that killed plan 01a0791b.
+    const messages = sent!.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(messages[1]!.content).toEqual([{ type: 'text', text: 'done' }]);
   });
 });
 

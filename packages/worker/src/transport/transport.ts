@@ -45,7 +45,10 @@ export interface Message {
 
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; thinking: string }
+  /** Replayed verbatim. The signature is what the provider verifies it against. */
+  | { type: 'thinking'; thinking: string; signature: string }
+  /** Opaque and encrypted. Passed back unchanged, exactly like a thinking block. */
+  | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean };
 
