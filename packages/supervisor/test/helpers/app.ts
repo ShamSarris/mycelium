@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { FastifyInstance, InjectOptions, LightMyRequestResponse } from 'fastify';
 import { v7 as uuidv7 } from 'uuid';
 import { buildApp } from '../../src/app.js';
+import { collectHostMetrics } from '../../src/metrics.js';
 import { loadConfig, type SupervisorConfig } from '../../src/config.js';
 import type { Deps } from '../../src/deps.js';
 import { Ledger } from '../../src/environments/ledger.js';
@@ -117,6 +118,9 @@ export async function buildTestApp(
     flushEvents: async () => {
       flushes.push(clock.now());
     },
+    // The real collector against the test ledger: it reads this machine, which
+    // is cheap and hermetic enough, and it is the thing the heartbeat sends.
+    metrics: () => collectHostMetrics({ ledger, config }),
   };
 
   const app = buildApp(deps);

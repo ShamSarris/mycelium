@@ -17,7 +17,13 @@ export function registerMachineRoutes(app: FastifyInstance, deps: Deps): void {
     if (id !== agent.id) {
       throw HttpError.forbidden('token does not belong to that supervisor');
     }
-    const { at } = await recordHeartbeat(deps, agent.id);
+    // The body is optional and unvalidated here on purpose: a supervisor that
+    // predates the telemetry sends `{}`, and one whose collector failed sends
+    // the heartbeat without it. Neither may cost a working VM its dispatch
+    // eligibility, so the shape is decided downstream and a bad report
+    // degrades to no report rather than to a 400.
+    const body = request.body as { metrics?: unknown } | undefined;
+    const { at } = await recordHeartbeat(deps, agent.id, body?.metrics);
     return { supervisor_id: agent.id, last_heartbeat_at: at };
   });
 

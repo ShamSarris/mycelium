@@ -109,7 +109,7 @@ describe('GET /healthz', () => {
       remoteAddress: '127.0.0.1',
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, environments: 0, capacity: 2 });
+    expect(response.json()).toMatchObject({ ok: true, environments: 0, capacity: 2 });
   });
 
   it('reports occupancy without naming any plan', async () => {

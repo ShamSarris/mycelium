@@ -5,6 +5,7 @@ import type {
   OrchestratorClient,
   PostEventsResult,
 } from '../../src/clients/orchestrator.js';
+import type { HostMetrics } from '../../src/metrics.js';
 import type {
   ContainerDriver,
   RunningContainer,
@@ -228,13 +229,16 @@ export class FakeContainerDriver implements ContainerDriver {
 
 export class FakeOrchestratorClient implements OrchestratorClient {
   readonly heartbeats: Date[] = [];
+  /** Parallel to `heartbeats`; undefined where the collector failed. */
+  readonly metrics: Array<HostMetrics | undefined> = [];
   readonly batches: EventEnvelope[][] = [];
   assignmentsResponse: Assignments = { plans: [], high_water_marks: [] };
   assignmentsThrows = false;
   nextPostResults: PostEventsResult[] = [];
 
-  async heartbeat(): Promise<void> {
+  async heartbeat(metrics?: HostMetrics): Promise<void> {
     this.heartbeats.push(new Date());
+    this.metrics.push(metrics);
   }
 
   async assignments(): Promise<Assignments> {
@@ -257,6 +261,7 @@ export class FakeOrchestratorClient implements OrchestratorClient {
   reset(): void {
     restoreMethods(this);
     this.heartbeats.length = 0;
+    this.metrics.length = 0;
     this.batches.length = 0;
     this.assignmentsResponse = { plans: [], high_water_marks: [] };
     this.assignmentsThrows = false;

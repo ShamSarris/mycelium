@@ -50,10 +50,13 @@ export function buildApp(deps: Deps, options: BuildOptions = {}): FastifyInstanc
 
   // Deliberately outside the peer allowlist so the operator can curl it, and
   // deliberately free of plan ids and addresses.
+  // The same object the heartbeat carries, from the same function, so what the
+  // operator curls and what the dashboard renders cannot disagree.
   app.get('/healthz', async () => ({
     ok: true,
     environments: deps.ledger.size,
     capacity: deps.config.maxEnvironments,
+    metrics: await deps.metrics().catch(() => null),
   }));
 
   registerOrchestratorRoutes(app, deps);

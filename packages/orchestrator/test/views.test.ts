@@ -90,6 +90,8 @@ describe('view projections', () => {
       enabled: true,
       priority: 100,
       last_heartbeat_at: null,
+      last_metrics: { cpu_count: 4, cpu_saturation: 0.5 },
+      last_metrics_at: new Date(1),
       created_at: new Date(0),
       healthy: false,
     });
@@ -98,5 +100,9 @@ describe('view projections', () => {
     expect(JSON.stringify(view)).not.toContain('MUST-NOT-LEAK');
     expect(view.name).toBe('mycelium-worker-1');
     expect(view.healthy).toBe(false);
+    // The telemetry has to survive the projection, or the servers page has
+    // nothing to render.
+    expect(view.last_metrics).toEqual({ cpu_count: 4, cpu_saturation: 0.5 });
+    expect(view.last_metrics_at).toEqual(new Date(1));
   });
 });

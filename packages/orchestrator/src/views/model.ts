@@ -1,5 +1,6 @@
 import type { PlanRow } from '../services/plans.js';
 import type { AgentRow } from '../services/supervisorsRegistry.js';
+import type { HostMetrics } from '../domain/telemetry.js';
 
 /**
  * What a page is allowed to see.
@@ -70,6 +71,10 @@ export interface AgentView {
   enabled: boolean;
   priority: number;
   last_heartbeat_at: Date | null;
+  /** Already allowlisted by domain/telemetry.ts on the way into the column. */
+  last_metrics: HostMetrics | null;
+  /** Separate from the heartbeat, so alive-but-silent is visible as such. */
+  last_metrics_at: Date | null;
   created_at: Date;
   healthy: boolean;
 }
@@ -83,6 +88,8 @@ export function viewAgent(row: AgentRow & { healthy: boolean }): AgentView {
     enabled: row.enabled,
     priority: row.priority,
     last_heartbeat_at: row.last_heartbeat_at,
+    last_metrics: row.last_metrics,
+    last_metrics_at: row.last_metrics_at,
     created_at: row.created_at,
     healthy: row.healthy,
   };

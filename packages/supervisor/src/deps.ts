@@ -8,6 +8,7 @@ import type { Ledger } from './environments/ledger.js';
 import type { EventSink } from './events/sink.js';
 import type { Broker } from './rpc/broker.js';
 import type { ProxyListener } from './proxy/connect.js';
+import type { HostMetrics } from './metrics.js';
 
 /**
  * Everything the supervisor needs, passed explicitly — no singletons and no
@@ -34,5 +35,7 @@ export interface Deps {
   sleep: (ms: number) => Promise<void>;
   /** Drains the spool once. Called during teardown so a terminal event lands. */
   flushEvents: () => Promise<void>;
+  /** What this VM looks like. Injected so tests never touch the real filesystem. */
+  metrics: () => Promise<HostMetrics>;
   log?: { warn?: (context: unknown, message: string) => void };
 }

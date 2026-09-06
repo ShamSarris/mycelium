@@ -38,3 +38,26 @@ describe('heartbeatOnce', () => {
     expect(h.events.ofType('error')[0]?.payload).toMatchObject({ stage: 'heartbeat' });
   });
 });
+
+describe('the metrics the heartbeat carries', () => {
+  it('sends a report on the machine', async () => {
+    await heartbeatOnce(h.deps);
+
+    const [metrics] = h.orchestrator.metrics;
+    expect(metrics?.cpu_count).toBeGreaterThan(0);
+    expect(metrics?.environment_capacity).toBe(h.config.maxEnvironments);
+  });
+
+  // Collecting metrics is the newest thing on the path that keeps this VM
+  // eligible for dispatch, and it reads the filesystem. It must never be the
+  // reason a working VM stops receiving work.
+  it('still heartbeats when the collector throws', async () => {
+    h.deps.metrics = async () => {
+      throw new Error('statfs exploded');
+    };
+
+    expect(await heartbeatOnce(h.deps)).toBe(true);
+    expect(h.orchestrator.heartbeats).toHaveLength(1);
+    expect(h.orchestrator.metrics[0]).toBeUndefined();
+  });
+});

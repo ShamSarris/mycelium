@@ -1,4 +1,5 @@
 import type { EventEnvelope } from '@mycelium/contracts';
+import type { HostMetrics } from '../metrics.js';
 
 /**
  * The three calls the supervisor makes upward, all authenticated with its
@@ -21,7 +22,8 @@ export type PostEventsResult =
   | { ok: false; retryable: boolean; status: number | null; message: string };
 
 export interface OrchestratorClient {
-  heartbeat(): Promise<void>;
+  /** Optional, so a failed metrics collection still leaves a heartbeat to send. */
+  heartbeat(metrics?: HostMetrics): Promise<void>;
   assignments(): Promise<Assignments>;
   postEvents(events: EventEnvelope[]): Promise<PostEventsResult>;
 }
@@ -38,11 +40,14 @@ export class HttpOrchestratorClient implements OrchestratorClient {
     return { 'content-type': 'application/json', authorization: `Bearer ${this.token}` };
   }
 
-  async heartbeat(): Promise<void> {
+  async heartbeat(metrics?: HostMetrics): Promise<void> {
     const response = await fetch(`${this.baseUrl}/supervisors/${this.supervisorId}/heartbeat`, {
       method: 'POST',
       headers: this.headers(),
-      body: '{}',
+      // An orchestrator that predates the telemetry ignores the field, and one
+      // that expects it treats an absent field as "no report". Deploy order
+      // therefore does not matter in either direction.
+      body: JSON.stringify(metrics === undefined ? {} : { metrics }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {

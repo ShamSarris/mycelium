@@ -2,16 +2,21 @@ import type { Deps } from '../deps.js';
 import { HttpError } from '../errors.js';
 import { withTransaction } from '../db/pool.js';
 import { isHealthy, type SupervisorCandidate } from '../domain/selection.js';
+import { parseHostMetrics, type HostMetrics } from '../domain/telemetry.js';
 import { recordEvent } from './events.js';
 import { hashToken, mintToken } from '../tokens.js';
 
 export interface AgentRow extends SupervisorCandidate {
   token_hash: string;
   created_at: Date;
+  /** Whatever the supervisor last reported, already allowlisted on the way in. */
+  last_metrics: HostMetrics | null;
+  /** Deliberately not last_heartbeat_at: a VM can be alive and silent. */
+  last_metrics_at: Date | null;
 }
 
 export const AGENT_COLUMNS = `id, name, env, base_url, token_hash, enabled, priority,
-  last_heartbeat_at, created_at`;
+  last_heartbeat_at, last_metrics, last_metrics_at, created_at`;
 
 /**
  * Static discovery: a supervisor is a row an operator inserts, not something
@@ -34,16 +39,42 @@ export async function registerSupervisor(
   return { id, token };
 }
 
-export async function recordHeartbeat(deps: Deps, agentId: string): Promise<{ at: Date }> {
+/**
+ * A heartbeat may carry a report on the machine the supervisor runs on. It is
+ * optional in both directions: a supervisor that predates the telemetry sends
+ * nothing, and a supervisor whose collector failed sends the heartbeat anyway
+ * rather than lose its place in the dispatch rotation. So `metrics` being
+ * absent is the normal case, never an error.
+ */
+export async function recordHeartbeat(
+  deps: Deps,
+  agentId: string,
+  rawMetrics?: unknown,
+): Promise<{ at: Date }> {
   const now = deps.clock.now();
+  // Built from an allowlist, so a semi-trusted peer cannot write arbitrary
+  // jsonb into a column the dashboard renders. See domain/telemetry.ts.
+  const metrics = parseHostMetrics(rawMetrics);
 
   await withTransaction(deps.pool, async (client) => {
+    // The two metric columns move together and only when there is something to
+    // record: a silent heartbeat leaves the last real report and its age
+    // alone, which is what makes alive-but-silent visible rather than looking
+    // like fresh data.
     const { rowCount } = await client.query(
-      'UPDATE agents SET last_heartbeat_at = $2 WHERE id = $1',
-      [agentId, now],
+      `UPDATE agents
+          SET last_heartbeat_at = $2,
+              last_metrics      = coalesce($3::jsonb, last_metrics),
+              last_metrics_at   = CASE WHEN $3::jsonb IS NULL THEN last_metrics_at ELSE $2 END
+        WHERE id = $1`,
+      [agentId, now, metrics === null ? null : JSON.stringify(metrics)],
     );
     if (rowCount === 0) throw HttpError.notFound('supervisor');
 
+    // Stays {agent_id}. This fires every 30 seconds per VM into a table that
+    // still has no retention policy (ticket 0008 section 8.3); the metrics
+    // live on the agents row, where there is one of them rather than 2,880 a
+    // day.
     await recordEvent(client, deps, {
       type: 'supervisor.heartbeat',
       severity: 'debug',

@@ -14,6 +14,7 @@ import { SeqCounters } from './events/seq.js';
 import { Spool } from './events/spool.js';
 import { SpoolEventSink } from './events/spoolSink.js';
 import { heartbeatOnce } from './loops.js';
+import { collectHostMetrics } from './metrics.js';
 import { EgressProxy } from './proxy/connect.js';
 import { reconcile } from './reconcile.js';
 import { UnixSocketBroker } from './rpc/broker.js';
@@ -51,11 +52,14 @@ export async function main(): Promise<void> {
   let broker: UnixSocketBroker;
   let proxy: EgressProxy;
 
+  const ledger = new Ledger();
+
+
   const deps: Deps = {
     config,
     clock: systemClock,
     newId: uuidv7,
-    ledger: new Ledger(),
+    ledger,
     events: new SpoolEventSink({
       supervisorId: config.supervisorId,
       spool,
@@ -75,6 +79,7 @@ export async function main(): Promise<void> {
     flushEvents: async () => {
       await relayOnce(spool, orchestrator);
     },
+    metrics: () => collectHostMetrics({ ledger, config }),
     log: console,
     broker: {
       listen: (planId, socketPath) => broker.listen(planId, socketPath),

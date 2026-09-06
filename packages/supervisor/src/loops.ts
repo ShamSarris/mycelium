@@ -1,4 +1,5 @@
 import type { Deps } from './deps.js';
+import type { HostMetrics } from './metrics.js';
 
 /**
  * The periodic work, written as single ticks so tests drive them directly with
@@ -12,8 +13,18 @@ import type { Deps } from './deps.js';
  * it — the next tick is thirty seconds away and the network may well be back.
  */
 export async function heartbeatOnce(deps: Deps): Promise<boolean> {
+  // Collected in its own try/catch, and outside the one below, so a collector
+  // that fails costs this VM a graph on a dashboard and nothing else. The
+  // heartbeat goes out either way.
+  let metrics: HostMetrics | undefined;
   try {
-    await deps.orchestrator.heartbeat();
+    metrics = await deps.metrics();
+  } catch {
+    metrics = undefined;
+  }
+
+  try {
+    await deps.orchestrator.heartbeat(metrics);
     return true;
   } catch (error) {
     await deps.events.emit({
