@@ -14,7 +14,11 @@ import {
   type PlanRow,
 } from '../services/plans.js';
 import { listAgents } from '../services/supervisorsRegistry.js';
-import { overview, planPage } from '../views/pages.js';
+import { renderPage, version, type PageParts } from '../views/html.js';
+import { overviewPage } from '../views/overview.js';
+import { planPage } from '../views/plan.js';
+import { viewAgent, viewPlan } from '../views/model.js';
+import { stubPage } from '../views/stub.js';
 
 /**
  * The dashboard: server-rendered pages over the same services the JSON routes
@@ -41,51 +45,72 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
 
   app.get('/', async (_request, reply) => reply.redirect('/ui', 302));
 
+  /**
+   * Safari and others ask for this regardless of the `<link rel="icon">` the
+   * layout carries, and without a route it falls through to the JSON
+   * not-found handler — which is what made the tab icon flicker between a
+   * spinner and the generic glyph on every navigation.
+   *
+   * Deliberately outside `requireOperator`, and the second route that is
+   * after `/healthz`: a 401 here would send the browser back to the generic
+   * glyph, which is the thing the icon exists to prevent. An empty 204
+   * carries nothing, so there is nothing to leak by answering it.
+   */
+  app.get('/favicon.ico', async (_request, reply) =>
+    reply.code(204).header('cache-control', 'public, max-age=604800, immutable').send(),
+  );
+
   app.get('/ui', async (request, reply) => {
     requireOperator(request, deps.config);
     const now = deps.clock.now();
-
-    const [plans, alerts, agents] = await Promise.all([
-      listPlans(deps, {}),
-      listAlerts(deps),
-      listAgents(deps),
-    ]);
-
-    const counts = await taskCounts(deps, plans);
-
-    return html(
-      reply,
-      overview({
-        now,
-        proposed: plans.filter((plan) => plan.state === 'proposed'),
-        plans: plans.map((plan) => ({
-          ...plan,
-          tokensSpent: counts.get(plan.id)?.tokens ?? 0,
-          taskCounts: counts.get(plan.id)?.states ?? {},
-        })),
-        alerts,
-        workers: agents.map((agent) => ({
-          ...agent,
-          planIds: plans
-            .filter((plan) => plan.agent_id === agent.id && !isTerminal(plan))
-            .map((plan) => plan.id),
-        })),
-        healthyWithinMinutes: deps.config.heartbeatHealthyMinutes,
-      }),
-    );
+    return html(reply, renderPage(overviewPage(await overviewModel(deps, now)), now));
   });
 
   app.get('/ui/plans/:id', async (request, reply) => {
     requireOperator(request, deps.config);
     const { id } = request.params as { id: string };
+    const now = deps.clock.now();
+    return html(reply, renderPage(planPage(await planModel(deps, id, now)), now));
+  });
 
-    const plan = await getPlanRow(deps, id);
-    const [tasks, events] = await Promise.all([
-      listTasks(deps, id),
-      queryEvents(deps, { planId: id, limit: 50 }),
-    ]);
+  /**
+   * The three pages the next phase fills in. They ship now so the nav is whole
+   * and the shell can be judged before anything is built on top of it.
+   */
+  const STUBS = [
+    ['projects', '/ui/projects', 'projects', 'every project, its plans, and what each has spent.'],
+    ['servers', '/ui/servers', 'servers', 'each worker VM, its health, and what it is running.'],
+    ['monitor', '/ui/monitor', 'monitor', 'what has run, what failed, and where the tokens went.'],
+  ] as const;
 
-    return html(reply, planPage({ now: deps.clock.now(), plan, tasks, events }));
+  for (const [nav, path, title, willShow] of STUBS) {
+    app.get(path, async (request, reply) => {
+      requireOperator(request, deps.config);
+      return html(reply, renderPage(stubPage(nav, title, willShow), deps.clock.now()));
+    });
+  }
+
+  /**
+   * The fragment routes. Each renders the same `PageParts` its document route
+   * does, so the markup a poll installs is the markup a reload would have
+   * produced and the two cannot drift.
+   *
+   * Deliberately without `sameOrigin`, unlike every mutating route below: these
+   * are GETs with no side effects, and a cross-origin `fetch()` cannot read a
+   * response without CORS headers, which nothing here ever sets. Adding the
+   * guard would only break the page's own poll.
+   */
+  app.get('/ui/live/overview', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return fragments(reply, overviewPage(await overviewModel(deps, now)), now);
+  });
+
+  app.get('/ui/live/plans/:id', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const { id } = request.params as { id: string };
+    const now = deps.clock.now();
+    return fragments(reply, planPage(await planModel(deps, id, now)), now);
   });
 
   for (const action of ['approve', 'reject', 'cancel'] as const) {
@@ -160,6 +185,63 @@ function header(request: FastifyRequest, name: string): string | undefined {
 
 function html(reply: FastifyReply, body: string): FastifyReply {
   return reply.type('text/html; charset=utf-8').send(body);
+}
+
+/** One page's regions, versioned, for the poll to compare against the document. */
+function fragments(reply: FastifyReply, parts: PageParts, now: Date): FastifyReply {
+  const regions: Record<string, { v: string; html: string }> = {};
+  for (const region of parts.regions) {
+    regions[region.id] = { v: version(region.html), html: region.html };
+  }
+
+  return reply
+    .type('application/json; charset=utf-8')
+    .header('cache-control', 'no-store')
+    .send({ as_of: now.toISOString(), attention: parts.attention, regions });
+}
+
+/**
+ * Everything the overview shows, loaded once. The document route and the
+ * fragment route both go through here rather than each assembling their own,
+ * which is the only reason the two are guaranteed to agree.
+ */
+async function overviewModel(deps: Deps, now: Date) {
+  const [plans, alerts, agents] = await Promise.all([
+    listPlans(deps, {}),
+    listAlerts(deps),
+    listAgents(deps),
+  ]);
+
+  const counts = await taskCounts(deps, plans);
+
+  return {
+    now,
+    proposed: plans.filter((plan) => plan.state === 'proposed').map(viewPlan),
+    plans: plans.map((plan) => ({
+      ...viewPlan(plan),
+      tokensSpent: counts.get(plan.id)?.tokens ?? 0,
+      taskCounts: counts.get(plan.id)?.states ?? {},
+    })),
+    alerts,
+    workers: agents.map((agent) => ({
+      ...viewAgent(agent),
+      planIds: plans
+        .filter((plan) => plan.agent_id === agent.id && !isTerminal(plan))
+        .map((plan) => plan.id),
+    })),
+    healthyWithinMinutes: deps.config.heartbeatHealthyMinutes,
+  };
+}
+
+/** As `overviewModel`, for one plan. Throws the same 404 both routes need. */
+async function planModel(deps: Deps, planId: string, now: Date) {
+  const plan = await getPlanRow(deps, planId);
+  const [tasks, events] = await Promise.all([
+    listTasks(deps, planId),
+    queryEvents(deps, { planId, limit: 50 }),
+  ]);
+
+  return { now, plan: viewPlan(plan), tasks, events };
 }
 
 function isTerminal(plan: PlanRow): boolean {
