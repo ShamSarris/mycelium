@@ -9,6 +9,11 @@ tickets/
 future_work/
 CLAUDE.md
 
+mycelium-keys
+mycelium-keys.*
+
+plan.json
+
 node_modules/
 dist/
 *.tsbuildinfo

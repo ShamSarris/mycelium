@@ -57,11 +57,14 @@ export class HttpGiteaClient implements GiteaClient {
     method: string,
     path: string,
     body?: unknown,
+    // Defaults to the admin token. Overridden only where Gitea refuses token
+    // auth - `POST /users/{name}/tokens` wants HTTP basic auth as that user.
+    auth: string = `token ${this.config.adminToken}`,
   ): Promise<{ status: number; json: unknown }> {
     const response = await fetch(this.url(path), {
       method,
       headers: {
-        authorization: `token ${this.config.adminToken}`,
+        authorization: auth,
         'content-type': 'application/json',
         accept: 'application/json',
       },
@@ -84,8 +87,9 @@ export class HttpGiteaClient implements GiteaClient {
     method: string,
     path: string,
     body?: unknown,
+    auth?: string,
   ): Promise<unknown> {
-    const { status, json } = await this.request(method, path, body);
+    const { status, json } = await this.request(method, path, body, auth);
     if (status < 200 || status >= 300) {
       throw new GiteaError(`${method} ${path} returned ${status}`, status);
     }
@@ -137,6 +141,17 @@ export class HttpGiteaClient implements GiteaClient {
     const username = `mycelium-bot-${planId.replace(/-/g, '').slice(0, 20)}`;
     const password = randomPassword();
 
+    // A failed earlier attempt can leave this user behind, and the password it
+    // was made with went with the process that made it. Delete-then-create so a
+    // retried approve starts clean rather than colliding on the username.
+    const stale = await this.request('DELETE', `/admin/users/${username}`);
+    if (stale.status !== 404 && (stale.status < 200 || stale.status >= 300)) {
+      throw new GiteaError(
+        `clearing stale bot ${username} returned ${stale.status}`,
+        stale.status,
+      );
+    }
+
     await this.expectOk('POST', '/admin/users', {
       username,
       email: `${username}@mycelium.local`,
@@ -150,10 +165,16 @@ export class HttpGiteaClient implements GiteaClient {
       { permission: 'write' },
     );
 
-    const created = (await this.expectOk('POST', `/users/${username}/tokens`, {
-      name: `plan-${planId}`,
-      scopes: ['write:repository'],
-    })) as { sha1: string };
+    // Gitea only accepts basic auth on this endpoint, and only for the user
+    // authenticating as itself - an admin token cannot mint another user's
+    // token. Authenticate as the bot with the password just set for it.
+    const basic = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+    const created = (await this.expectOk(
+      'POST',
+      `/users/${username}/tokens`,
+      { name: `plan-${planId}`, scopes: ['write:repository'] },
+      basic,
+    )) as { sha1: string };
 
     return { token: created.sha1, ref: username };
   }

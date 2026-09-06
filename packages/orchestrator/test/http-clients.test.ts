@@ -330,4 +330,85 @@ describe('HttpGiteaClient', () => {
 
     await expect(client().revokeBotToken('bot-1')).resolves.toBeUndefined();
   });
+
+  it('mints the bot token as the bot user over basic auth, not with the admin token', async () => {
+    let tokenAuth: string | undefined;
+    let adminUsersAuth: string | undefined;
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/admin/users/mycelium-bot-plan1', method: 'DELETE' })
+      .reply(404, {});
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/admin/users', method: 'POST' })
+      .reply(201, (options) => {
+        adminUsersAuth = (options.headers as Record<string, string>).authorization;
+        return {};
+      });
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({
+        path: '/api/v1/repos/mycelium/demo/collaborators/mycelium-bot-plan1',
+        method: 'PUT',
+      })
+      .reply(204, {});
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/users/mycelium-bot-plan1/tokens', method: 'POST' })
+      .reply(201, (options) => {
+        tokenAuth = (options.headers as Record<string, string>).authorization;
+        return { sha1: 'bot-token-sha' };
+      });
+
+    const result = await client().createBotToken('demo', 'plan1');
+
+    expect(result).toEqual({ token: 'bot-token-sha', ref: 'mycelium-bot-plan1' });
+    // The user is still created with the admin token, as before.
+    expect(adminUsersAuth).toBe('token admin-token');
+    // The token itself Gitea will only mint for the user authenticating as itself.
+    expect(tokenAuth).toMatch(/^Basic /);
+    const [user, pass] = Buffer.from(tokenAuth!.slice('Basic '.length), 'base64')
+      .toString('utf8')
+      .split(':');
+    expect(user).toBe('mycelium-bot-plan1');
+    expect((pass ?? '').length).toBeGreaterThan(0);
+  });
+
+  it('clears a bot user left by a failed earlier attempt before recreating it', async () => {
+    let deleted = false;
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/admin/users/mycelium-bot-plan1', method: 'DELETE' })
+      .reply(204, () => {
+        deleted = true;
+        return {};
+      });
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/admin/users', method: 'POST' })
+      .reply(201, {});
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({
+        path: '/api/v1/repos/mycelium/demo/collaborators/mycelium-bot-plan1',
+        method: 'PUT',
+      })
+      .reply(204, {});
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/users/mycelium-bot-plan1/tokens', method: 'POST' })
+      .reply(201, { sha1: 'x' });
+
+    await client().createBotToken('demo', 'plan1');
+    expect(deleted).toBe(true);
+  });
+
+  it('raises if clearing a stale bot user fails for a reason other than absence', async () => {
+    agent
+      .get(GITEA_ORIGIN)
+      .intercept({ path: '/api/v1/admin/users/mycelium-bot-plan1', method: 'DELETE' })
+      .reply(500, {});
+
+    await expect(client().createBotToken('demo', 'plan1')).rejects.toThrow(/500/);
+  });
 });
