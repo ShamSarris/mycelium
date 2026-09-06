@@ -28,7 +28,7 @@ export function declarations(): ToolDeclaration[] {
         required: ['path'],
         properties: {
           path: { type: 'string' },
-          max_bytes: { type: 'integer', minimum: 1 },
+          max_bytes: { type: 'integer' },
         },
       },
     },
@@ -61,7 +61,15 @@ export function declarations(): ToolDeclaration[] {
 
 export async function read(deps: Deps, raw: Record<string, unknown>): Promise<ToolOutcome> {
   const candidate = raw.path as string;
-  const cap = Math.min((raw.max_bytes as number | undefined) ?? Infinity, deps.config.fileReadMaxBytes);
+  const requested = raw.max_bytes as number | undefined;
+
+  // `strict: true` on the declaration rejects `minimum`, so the floor is checked
+  // here instead: a zero or negative cap would silently return an empty read.
+  if (requested !== undefined && requested < 1) {
+    return fail(`max_bytes must be at least 1, got ${requested}`);
+  }
+
+  const cap = Math.min(requested ?? Infinity, deps.config.fileReadMaxBytes);
 
   return guard(candidate, async () => {
     const resolved = await realContainedPath(deps.config.workdir, candidate);

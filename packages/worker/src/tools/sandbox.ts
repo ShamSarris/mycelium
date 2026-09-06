@@ -33,9 +33,8 @@ export function declaration(): ToolDeclaration {
         image: { type: 'string', description: 'A container image from the node allowlist.' },
         cmd: {
           type: 'array',
-          minItems: 1,
           items: { type: 'string' },
-          description: 'Argv. Not a shell string; use ["sh", "-lc", "..."] if you want a shell.',
+          description: 'Argv, at least one element. Not a shell string; use ["sh", "-lc", "..."] if you want a shell.',
         },
         env: {
           // A closed array of pairs, not an open map: the provider rejects an
@@ -57,7 +56,7 @@ export function declaration(): ToolDeclaration {
           type: 'boolean',
           description: 'Attach the plan network, reaching only the plan allowlist through a proxy.',
         },
-        timeout_sec: { type: 'integer', minimum: 1 },
+        timeout_sec: { type: 'integer', description: 'Wall-clock kill after this many seconds; must be positive.' },
       },
     },
   };
@@ -73,6 +72,16 @@ interface Args {
 
 export async function run(deps: Deps, raw: Record<string, unknown>): Promise<ToolOutcome> {
   const args = raw as unknown as Args;
+
+  // The schema can no longer carry these bounds - `strict: true` rejects
+  // `minItems`/`minimum` - so they are checked here, where a bad call becomes a
+  // tool result the model can correct rather than a confusing broker error.
+  if (args.cmd.length === 0) {
+    return error('cmd needs at least one element; it is argv, not a shell string');
+  }
+  if (args.timeout_sec !== undefined && args.timeout_sec < 1) {
+    return error(`timeout_sec must be a positive number of seconds, got ${args.timeout_sec}`);
+  }
 
   const env: Record<string, string> = {};
   for (const { name, value } of args.env ?? []) env[name] = value;

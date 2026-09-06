@@ -71,6 +71,62 @@ describe('declarations', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('uses only keywords the strict schema subset accepts, nested schemas included', () => {
+    // `strict: true` on the declaration (transport.ts) makes the provider
+    // validate each schema against a restricted JSON Schema subset, and a
+    // keyword outside it 400s the whole request - `sandbox` shipped
+    // `minItems`/`minimum` that failed on the first real call. The walk visits
+    // schema positions only, so a property *named* e.g. `pattern` is not a
+    // false positive. Subset per the structured-outputs docs: object/array/
+    // string/integer/number/boolean/null, enum/const/anyOf/allOf/$ref, a fixed
+    // set of string formats, and `additionalProperties: false` - nothing else.
+    const BANNED = new Set([
+      'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+      'minLength', 'maxLength', 'pattern',
+      'minItems', 'maxItems', 'uniqueItems', 'contains', 'minContains', 'maxContains', 'prefixItems',
+      'minProperties', 'maxProperties', 'patternProperties', 'propertyNames',
+      'dependentRequired', 'dependentSchemas', 'unevaluatedProperties', 'unevaluatedItems',
+      'oneOf', 'not', 'if', 'then', 'else', 'default',
+    ]);
+    const OK_FORMATS = new Set([
+      'date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid',
+    ]);
+    const offenders: string[] = [];
+    const walk = (schema: unknown, path: string): void => {
+      if (schema === null || typeof schema !== 'object') return;
+      const s = schema as Record<string, unknown>;
+      for (const key of Object.keys(s)) {
+        if (BANNED.has(key)) offenders.push(`${path}.${key}`);
+      }
+      if (typeof s.format === 'string' && !OK_FORMATS.has(s.format)) {
+        offenders.push(`${path}.format=${s.format}`);
+      }
+      if (s.properties !== null && typeof s.properties === 'object') {
+        for (const [name, sub] of Object.entries(s.properties as Record<string, unknown>)) {
+          walk(sub, `${path}.properties.${name}`);
+        }
+      }
+      walk(s.items, `${path}.items`);
+      if (typeof s.additionalProperties === 'object') {
+        walk(s.additionalProperties, `${path}.additionalProperties`);
+      }
+      for (const comb of ['anyOf', 'allOf', 'oneOf'] as const) {
+        if (Array.isArray(s[comb])) {
+          (s[comb] as unknown[]).forEach((sub, i) => walk(sub, `${path}.${comb}[${i}]`));
+        }
+      }
+      for (const bag of ['$defs', 'definitions'] as const) {
+        if (s[bag] !== null && typeof s[bag] === 'object') {
+          for (const [name, sub] of Object.entries(s[bag] as Record<string, unknown>)) {
+            walk(sub, `${path}.${bag}.${name}`);
+          }
+        }
+      }
+    };
+    for (const tool of tools.declarations()) walk(tool.inputSchema, tool.name);
+    expect(offenders).toEqual([]);
+  });
+
   it('returns the same declarations every time, so the cached prefix holds', () => {
     expect(tools.declarations()).toEqual(tools.declarations());
   });
