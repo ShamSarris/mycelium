@@ -85,6 +85,36 @@ button{font:600 11px/1 var(--mono);letter-spacing:.05em;padding:.45rem .75rem;
 button:hover{background:var(--bg-3);border-color:var(--fg-faint);}
 button.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent);}
 
+/* A state, said in a shape as well as a word, so a row that needs a decision
+   is findable without reading every row. */
+.pill{display:inline-block;padding:.1rem .4rem;border-radius:999px;
+      font:600 10px/1.6 var(--mono);letter-spacing:.06em;text-transform:uppercase;
+      border:1px solid var(--line);color:var(--fg-dim);background:var(--bg-2);}
+.pill.ok{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);}
+.pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);}
+.pill.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent);}
+
+/* The bar answers "is this a problem"; the figure beside it answers "how bad".
+   Neither replaces the other, so both are always rendered. */
+.bar{display:inline-block;width:5rem;height:5px;border-radius:999px;
+     background:var(--bg-3);overflow:hidden;vertical-align:middle;}
+.bar>span{display:block;height:100%;background:var(--accent);}
+.bar.warn>span{background:var(--warn);}
+.bar.bad>span{background:var(--bad);}
+
+/* Label-over-value pairs, laid out by the grid rather than by margins, so a
+   machine reporting six fields and one reporting sixteen both stay aligned. */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10rem,1fr));
+      gap:.4rem .9rem;margin-top:.5rem;}
+.kv .k{display:block;font:600 9.5px/1.6 var(--mono);letter-spacing:.09em;
+       text-transform:uppercase;color:var(--fg-faint);}
+.kv .v{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;}
+
+/* One machine, one card. The name and its health read first, the numbers
+   under them, and a card with nothing wrong is visually silent. */
+.server{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;}
+.server .name{font:600 13px/1.3 var(--sans);}
+
 ul{padding-left:1.05rem;margin:.3rem 0;}
 li{margin:.15rem 0;}
 @media (max-width:52rem){ main{padding:.6rem;} th,td{padding:.35rem;} }

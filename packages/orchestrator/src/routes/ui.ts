@@ -20,6 +20,7 @@ import { renderPage, version, type PageParts } from '../views/html.js';
 import { overviewPage } from '../views/overview.js';
 import { planPage } from '../views/plan.js';
 import { projectPage, projectsPage } from '../views/projects.js';
+import { serversPage } from '../views/servers.js';
 import { viewAgent, viewPlan } from '../views/model.js';
 import { stubPage } from '../views/stub.js';
 
@@ -89,12 +90,17 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     return html(reply, renderPage(projectPage(await projectModel(deps, id, now)), now));
   });
 
+  app.get('/ui/servers', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return html(reply, renderPage(serversPage(await serversModel(deps, now)), now));
+  });
+
   /**
-   * The two pages the next phase fills in. They ship now so the nav is whole
-   * and the shell can be judged before anything is built on top of it.
+   * The page the next phase fills in. It ships now so the nav is whole and the
+   * shell can be judged before anything is built on top of it.
    */
   const STUBS = [
-    ['servers', '/ui/servers', 'servers', 'each worker VM, its health, and what it is running.'],
     ['monitor', '/ui/monitor', 'monitor', 'what has run, what failed, and where the tokens went.'],
   ] as const;
 
@@ -139,6 +145,12 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     const { id } = request.params as { id: string };
     const now = deps.clock.now();
     return fragments(reply, projectPage(await projectModel(deps, id, now)), now);
+  });
+
+  app.get('/ui/live/servers', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return fragments(reply, serversPage(await serversModel(deps, now)), now);
   });
 
   for (const action of ['approve', 'reject', 'cancel'] as const) {
@@ -294,6 +306,28 @@ async function projectModel(deps: Deps, projectId: string, now: Date) {
       ...viewPlan(plan),
       tokensSpent: counts.get(plan.id)?.tokens ?? 0,
       taskCounts: counts.get(plan.id)?.states ?? {},
+    })),
+  };
+}
+
+/**
+ * The fleet, and what is placed on each VM. The placement comes from the same
+ * plan list the overview uses rather than a per-agent query: an unhealthy VM's
+ * stranded plans are the reason to look at this page at all, and they have to
+ * be the same plans the overview is naming.
+ */
+async function serversModel(deps: Deps, now: Date) {
+  const [agents, plans] = await Promise.all([listAgents(deps), listPlans(deps, {})]);
+
+  return {
+    now,
+    healthyWithinMinutes: deps.config.heartbeatHealthyMinutes,
+    attention: plans.filter((plan) => plan.state === 'proposed').length,
+    servers: agents.map((agent) => ({
+      ...viewAgent(agent),
+      plans: plans
+        .filter((plan) => plan.agent_id === agent.id && !isTerminal(plan))
+        .map(viewPlan),
     })),
   };
 }

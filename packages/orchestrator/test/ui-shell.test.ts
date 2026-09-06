@@ -158,7 +158,7 @@ describe('the nav', () => {
    * render an empty page that looks broken.
    */
   it('says what each unbuilt page is for, rather than looking broken', async () => {
-    for (const url of ['/ui/servers', '/ui/monitor']) {
+    for (const url of ['/ui/monitor']) {
       const { body } = await page(url);
       expect(body.toLowerCase(), url).toMatch(/not built yet|coming|will show/);
     }
