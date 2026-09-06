@@ -513,18 +513,80 @@ export async function releasePlanResources(
   }
 }
 
-export async function listPlans(deps: Deps, filter: { state?: string }): Promise<PlanRow[]> {
+/**
+ * There is no pagination anywhere in v1, so this is a cap rather than a page
+ * size. Exported because a page that hits it has to say so: silently showing
+ * 200 of 340 plans is the kind of lie an operator only catches by counting.
+ */
+export const PLAN_LIST_LIMIT = 200;
+
+export async function listPlans(
+  deps: Deps,
+  filter: { state?: string; projectId?: string },
+): Promise<PlanRow[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
   if (filter.state !== undefined) {
-    const { rows } = await deps.pool.query<PlanRow>(
-      `SELECT ${PLAN_COLUMNS} FROM plans WHERE state = $1 ORDER BY proposed_at DESC LIMIT 200`,
-      [filter.state],
-    );
-    return rows;
+    params.push(filter.state);
+    conditions.push(`state = $${params.length}`);
   }
+  if (filter.projectId !== undefined) {
+    params.push(filter.projectId);
+    conditions.push(`project_id = $${params.length}`);
+  }
+
+  const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`;
   const { rows } = await deps.pool.query<PlanRow>(
-    `SELECT ${PLAN_COLUMNS} FROM plans ORDER BY proposed_at DESC LIMIT 200`,
+    `SELECT ${PLAN_COLUMNS} FROM plans${where}
+      ORDER BY proposed_at DESC LIMIT ${PLAN_LIST_LIMIT}`,
+    params,
   );
   return rows;
+}
+
+export interface TaskRollup {
+  /** Task counts by state, for the plan tables. */
+  states: Record<string, number>;
+  tokens: number;
+}
+
+/**
+ * Per-plan task states and spend, in one query rather than one per plan.
+ *
+ * Lives here rather than beside the page that first needed it because three
+ * pages now render the same numbers, and the sum over `tasks` is the only
+ * definition of a plan's spend — no plan row carries one.
+ */
+export async function taskRollup(
+  deps: Deps,
+  planIds: string[],
+): Promise<Map<string, TaskRollup>> {
+  const result = new Map<string, TaskRollup>();
+  if (planIds.length === 0) return result;
+
+  const { rows } = await deps.pool.query<{
+    plan_id: string;
+    state: string;
+    n: number;
+    tokens: number;
+  }>(
+    `SELECT plan_id, state::text AS state, count(*)::int AS n,
+            coalesce(sum(tokens_spent), 0)::int AS tokens
+       FROM tasks
+      WHERE plan_id = ANY($1)
+      GROUP BY plan_id, state`,
+    [planIds],
+  );
+
+  for (const row of rows) {
+    const entry = result.get(row.plan_id) ?? { states: {}, tokens: 0 };
+    entry.states[row.state] = row.n;
+    entry.tokens += row.tokens;
+    result.set(row.plan_id, entry);
+  }
+
+  return result;
 }
 
 export async function listTasks(deps: Deps, planId: string): Promise<TaskRow[]> {

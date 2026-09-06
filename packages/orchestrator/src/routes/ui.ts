@@ -11,12 +11,15 @@ import {
   listPlans,
   listTasks,
   rejectPlan,
+  taskRollup,
   type PlanRow,
 } from '../services/plans.js';
+import { getProjectRow, listProjects } from '../services/projects.js';
 import { listAgents } from '../services/supervisorsRegistry.js';
 import { renderPage, version, type PageParts } from '../views/html.js';
 import { overviewPage } from '../views/overview.js';
 import { planPage } from '../views/plan.js';
+import { projectPage, projectsPage } from '../views/projects.js';
 import { viewAgent, viewPlan } from '../views/model.js';
 import { stubPage } from '../views/stub.js';
 
@@ -73,12 +76,24 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     return html(reply, renderPage(planPage(await planModel(deps, id, now)), now));
   });
 
+  app.get('/ui/projects', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return html(reply, renderPage(projectsPage(await projectsModel(deps, now)), now));
+  });
+
+  app.get('/ui/projects/:id', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const { id } = request.params as { id: string };
+    const now = deps.clock.now();
+    return html(reply, renderPage(projectPage(await projectModel(deps, id, now)), now));
+  });
+
   /**
-   * The three pages the next phase fills in. They ship now so the nav is whole
+   * The two pages the next phase fills in. They ship now so the nav is whole
    * and the shell can be judged before anything is built on top of it.
    */
   const STUBS = [
-    ['projects', '/ui/projects', 'projects', 'every project, its plans, and what each has spent.'],
     ['servers', '/ui/servers', 'servers', 'each worker VM, its health, and what it is running.'],
     ['monitor', '/ui/monitor', 'monitor', 'what has run, what failed, and where the tokens went.'],
   ] as const;
@@ -111,6 +126,19 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     const { id } = request.params as { id: string };
     const now = deps.clock.now();
     return fragments(reply, planPage(await planModel(deps, id, now)), now);
+  });
+
+  app.get('/ui/live/projects', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return fragments(reply, projectsPage(await projectsModel(deps, now)), now);
+  });
+
+  app.get('/ui/live/projects/:id', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const { id } = request.params as { id: string };
+    const now = deps.clock.now();
+    return fragments(reply, projectPage(await projectModel(deps, id, now)), now);
   });
 
   for (const action of ['approve', 'reject', 'cancel'] as const) {
@@ -212,7 +240,7 @@ async function overviewModel(deps: Deps, now: Date) {
     listAgents(deps),
   ]);
 
-  const counts = await taskCounts(deps, plans);
+  const counts = await taskRollup(deps, plans.map((plan) => plan.id));
 
   return {
     now,
@@ -244,33 +272,32 @@ async function planModel(deps: Deps, planId: string, now: Date) {
   return { now, plan: viewPlan(plan), tasks, events };
 }
 
-function isTerminal(plan: PlanRow): boolean {
-  return ['done', 'failed', 'rejected', 'cancelled'].includes(plan.state);
+/** Every project, with the plan counts and spend each has accumulated. */
+async function projectsModel(deps: Deps, now: Date) {
+  return { now, projects: await listProjects(deps) };
 }
 
-/** Per-plan task states and spend, in one query rather than one per plan. */
-async function taskCounts(
-  deps: Deps,
-  plans: PlanRow[],
-): Promise<Map<string, { states: Record<string, number>; tokens: number }>> {
-  const result = new Map<string, { states: Record<string, number>; tokens: number }>();
-  if (plans.length === 0) return result;
+/**
+ * One project and its plans, rendered through the overview's plan table. The
+ * 404 for an unknown id comes from `getProjectRow`, so the page and its
+ * fragment refuse identically and the poll stops rather than retrying.
+ */
+async function projectModel(deps: Deps, projectId: string, now: Date) {
+  const project = await getProjectRow(deps, projectId);
+  const plans = await listPlans(deps, { projectId });
+  const counts = await taskRollup(deps, plans.map((plan) => plan.id));
 
-  const { rows } = await deps.pool.query<{ plan_id: string; state: string; n: number; tokens: number }>(
-    `SELECT plan_id, state::text AS state, count(*)::int AS n,
-            coalesce(sum(tokens_spent), 0)::int AS tokens
-       FROM tasks
-      WHERE plan_id = ANY($1)
-      GROUP BY plan_id, state`,
-    [plans.map((plan) => plan.id)],
-  );
+  return {
+    now,
+    project,
+    plans: plans.map((plan) => ({
+      ...viewPlan(plan),
+      tokensSpent: counts.get(plan.id)?.tokens ?? 0,
+      taskCounts: counts.get(plan.id)?.states ?? {},
+    })),
+  };
+}
 
-  for (const row of rows) {
-    const entry = result.get(row.plan_id) ?? { states: {}, tokens: 0 };
-    entry.states[row.state] = row.n;
-    entry.tokens += row.tokens;
-    result.set(row.plan_id, entry);
-  }
-
-  return result;
+function isTerminal(plan: PlanRow): boolean {
+  return ['done', 'failed', 'rejected', 'cancelled'].includes(plan.state);
 }

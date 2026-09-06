@@ -1,6 +1,7 @@
 import type { Plan } from '@mycelium/contracts';
 import { planTokenCeiling } from '../domain/budget.js';
 import type { AlertRow } from '../services/alerts.js';
+import { PLAN_LIST_LIMIT } from '../services/plans.js';
 import { html, raw, type PageParts } from './html.js';
 import type { AgentView, PlanView } from './model.js';
 
@@ -111,6 +112,14 @@ export function planTable(
 ): string {
   if (plans.length === 0) return html`<h2>Plans</h2><p class="empty">No plans yet.</p>`;
 
+  // There is no pagination in v1. A list that is exactly the cap is probably
+  // not the whole list, and saying so is the difference between a short
+  // history and a truncated one.
+  const capped =
+    plans.length < PLAN_LIST_LIMIT
+      ? ''
+      : html`<p class="meta">Showing the most recent ${PLAN_LIST_LIMIT}; there may be more.</p>`;
+
   return html`<h2>Plans</h2>
     <table>
       <tr><th>plan</th><th>state</th><th>tasks</th><th>tokens</th><th>why</th></tr>
@@ -130,7 +139,7 @@ export function planTable(
           <td class="meta">${whyNotRunning(plan)}</td>
         </tr>`;
       })}
-    </table>`;
+    </table>${raw(capped)}`;
 }
 
 function workerTable(
