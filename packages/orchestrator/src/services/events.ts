@@ -1,17 +1,10 @@
-import { validateEvent } from '@mycelium/contracts';
+import { looksLikeSecretKey, validateEvent } from '@mycelium/contracts';
 import type { PoolClient } from 'pg';
 import type { Deps } from '../deps.js';
 import { HttpError } from '../errors.js';
 import { withTransaction } from '../db/pool.js';
 
 export const MAX_BATCH = 500;
-
-/**
- * Baseline section 7: no secret is ever written to an event payload. This
- * catches the obvious mistake at the boundary rather than discovering it in a
- * pg_dump months later.
- */
-const SECRET_KEY = /token|secret|password|api[_-]?key/i;
 
 export type EventType =
   | 'plan.state_changed'
@@ -141,7 +134,10 @@ export async function ingestEvents(
     }
     const payload = envelope.payload as Record<string, unknown> | undefined;
     if (payload) {
-      const offending = Object.keys(payload).find((key) => SECRET_KEY.test(key));
+      // Baseline section 7: no secret is ever written to an event payload.
+      // The rule is shared with the supervisor's emit guard so the two cannot
+      // drift; see packages/contracts/src/secrets.ts.
+      const offending = Object.keys(payload).find(looksLikeSecretKey);
       if (offending !== undefined) {
         throw HttpError.badRequest(
           'secret_in_payload',

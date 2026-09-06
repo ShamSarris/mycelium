@@ -110,6 +110,35 @@ describe('ingest from a supervisor', () => {
     }
   });
 
+  // The other half of the same rule: a key that counts tokens is not a key that
+  // carries one. This payload is agent.model_call's, verbatim from the worker's
+  // emitter; the old substring guard refused five of its eight keys, so no
+  // model-call event ever reached this table.
+  it('accepts a payload whose keys count tokens rather than carrying one', async () => {
+    const response = await ingest(supervisor.token, [
+      envelope({
+        type: 'agent.model_call',
+        payload: {
+          model: 'claude-sonnet-5',
+          stop_reason: 'end_turn',
+          tokens_total: 12_400,
+          tokens_this_attempt: 3_100,
+          input_tokens: 2_800,
+          output_tokens: 300,
+          cache_read_tokens: 9_000,
+          usage_source: 'provider',
+        },
+      }),
+    ]);
+
+    expect(response.statusCode).toBe(200);
+    const { rows } = await h.pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM events WHERE type = 'agent.model_call'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toMatchObject({ tokens_total: 12_400, cache_read_tokens: 9_000 });
+  });
+
   it('fails the whole batch when one envelope is invalid, so a spool never half-drains', async () => {
     const response = await ingest(supervisor.token, [
       envelope(),

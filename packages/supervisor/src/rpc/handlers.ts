@@ -1,4 +1,4 @@
-import type { EventEnvelope } from '@mycelium/contracts';
+import { looksLikeSecretKey, type EventEnvelope } from '@mycelium/contracts';
 import type { Deps } from '../deps.js';
 import type { Environment } from '../environments/ledger.js';
 import { canLaunchSandbox } from '../domain/admission.js';
@@ -12,9 +12,6 @@ import { rpcError, type RpcRequest, type RpcResponse } from './protocol.js';
  * request body. That is the whole reason the socket is per-plan: an agent
  * cannot name another plan because it has no way to say one.
  */
-
-/** Mirrors the orchestrator's ingest guard. Catching it here keeps a bad event out of the spool. */
-const SECRET_KEY = /token|secret|password|api[_-]?key/i;
 
 /** Set by the supervisor for a networked sandbox; an agent that sets them is refused. */
 const RESERVED_SANDBOX_ENV = new Set(['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']);
@@ -82,7 +79,10 @@ async function emitEvent(
 
   const payload = params.payload;
   if (payload !== undefined && payload !== null) {
-    const offending = Object.keys(payload).find((key) => SECRET_KEY.test(key));
+    // Shared with the orchestrator's ingest guard rather than mirrored here, so
+    // the two cannot disagree: a key one accepts and the other refuses wedges
+    // the spool behind a record it can never drain.
+    const offending = Object.keys(payload).find(looksLikeSecretKey);
     if (offending !== undefined) {
       // The orchestrator refuses the whole batch for this, which would wedge
       // the spool behind one bad record. Cheaper to stop it entering.
@@ -134,7 +134,7 @@ async function runSandbox(
       return rpcError('reserved_sandbox_env', `${key} is set by the supervisor, not the agent`);
     }
     // Sandboxes receive no credentials, ever (baseline section 7, G3).
-    if (SECRET_KEY.test(key)) {
+    if (looksLikeSecretKey(key)) {
       return rpcError('credential_in_sandbox_env', `${key} looks like a credential`);
     }
   }

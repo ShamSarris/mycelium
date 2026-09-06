@@ -94,6 +94,32 @@ describe('events.emit', () => {
     expect(response).toMatchObject({ ok: false, error: { code: 'secret_in_payload' } });
     expect(h.events.events).toHaveLength(0);
   });
+
+  // The payload below is copied verbatim from the agent's emitter in
+  // packages/worker/src/loop/run.ts. The guard used to be a substring match on
+  // /token|.../, which meant five of these eight keys read as credentials and
+  // every model call was refused here — so the system recorded no model
+  // telemetry at all, and nothing noticed, because the worker's own test
+  // asserts against a fake broker rather than this handler.
+  it('records agent.model_call, whose payload counts tokens rather than carrying one', async () => {
+    const response = await call('events.emit', {
+      type: 'agent.model_call',
+      payload: {
+        model: 'claude-sonnet-5',
+        stop_reason: 'tool_use',
+        tokens_total: 12_400,
+        tokens_this_attempt: 3_100,
+        input_tokens: 2_800,
+        output_tokens: 300,
+        cache_read_tokens: 9_000,
+        usage_source: 'provider',
+      },
+    });
+
+    expect(response).toEqual({ ok: true, result: { recorded: true } });
+    const [event] = h.events.ofType('agent.model_call');
+    expect(event?.payload).toMatchObject({ tokens_total: 12_400, input_tokens: 2_800 });
+  });
 });
 
 describe('sandbox.run - the allowlist', () => {
