@@ -54,6 +54,23 @@ describe('declarations', () => {
     }
   });
 
+  it('closes every object in every schema, nested ones included', () => {
+    // The provider rejects an object schema whose additionalProperties is
+    // anything but false - a nested one counts. A top-level-only check let the
+    // sandbox tool ship an open `env` map that 400d on the first real call.
+    const offenders: string[] = [];
+    const walk = (node: unknown, path: string): void => {
+      if (node === null || typeof node !== 'object') return;
+      const schema = node as Record<string, unknown>;
+      if (schema.type === 'object' && schema.additionalProperties !== false) {
+        offenders.push(path);
+      }
+      for (const [key, value] of Object.entries(schema)) walk(value, `${path}.${key}`);
+    };
+    for (const tool of tools.declarations()) walk(tool.inputSchema, tool.name);
+    expect(offenders).toEqual([]);
+  });
+
   it('returns the same declarations every time, so the cached prefix holds', () => {
     expect(tools.declarations()).toEqual(tools.declarations());
   });
@@ -127,6 +144,23 @@ describe('sandbox', () => {
     expect(content(await call('sandbox', { image: 'node:22', cmd: ['ls'] }))).toContain('900000');
   });
 
+  it('folds env pairs into a map for the broker', async () => {
+    h.broker.sandboxResult = sandboxResult({
+      stdout: { preview: 'ok', bytes: 2, truncated: false },
+    });
+
+    await call('sandbox', {
+      image: 'node:22',
+      cmd: ['env'],
+      env: [
+        { name: 'CI', value: '1' },
+        { name: 'TZ', value: 'UTC' },
+      ],
+    });
+
+    expect(h.broker.sandboxCalls[0]).toMatchObject({ env: { CI: '1', TZ: 'UTC' } });
+  });
+
   it('turns a broker refusal into a tool error carrying its code', async () => {
     h.broker.sandboxRejectsWith = new BrokerRejection(
       'image_not_allowed',
@@ -143,7 +177,7 @@ describe('sandbox', () => {
     const outcome = await call('sandbox', {
       image: 'node:22',
       cmd: ['sh'],
-      env: { HTTP_PROXY: 'http://mine' },
+      env: [{ name: 'HTTP_PROXY', value: 'http://mine' }],
     });
 
     // The broker refuses this too, but catching it here keeps a pointless

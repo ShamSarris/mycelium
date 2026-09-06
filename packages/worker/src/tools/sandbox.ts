@@ -38,9 +38,20 @@ export function declaration(): ToolDeclaration {
           description: 'Argv. Not a shell string; use ["sh", "-lc", "..."] if you want a shell.',
         },
         env: {
-          type: 'object',
-          additionalProperties: { type: 'string' },
-          description: 'Extra environment. Never credentials; the container is not trusted with them.',
+          // A closed array of pairs, not an open map: the provider rejects an
+          // object schema whose additionalProperties is not false.
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'value'],
+            properties: {
+              name: { type: 'string' },
+              value: { type: 'string' },
+            },
+          },
+          description:
+            'Extra environment, as {name, value} pairs. Never credentials; the container is not trusted with them.',
         },
         network: {
           type: 'boolean',
@@ -55,7 +66,7 @@ export function declaration(): ToolDeclaration {
 interface Args {
   image: string;
   cmd: string[];
-  env?: Record<string, string>;
+  env?: Array<{ name: string; value: string }>;
   network?: boolean;
   timeout_sec?: number;
 }
@@ -63,7 +74,10 @@ interface Args {
 export async function run(deps: Deps, raw: Record<string, unknown>): Promise<ToolOutcome> {
   const args = raw as unknown as Args;
 
-  const offending = Object.keys(args.env ?? {}).find((key) => RESERVED_ENV.has(key));
+  const env: Record<string, string> = {};
+  for (const { name, value } of args.env ?? []) env[name] = value;
+
+  const offending = Object.keys(env).find((key) => RESERVED_ENV.has(key));
   if (offending !== undefined) {
     return error(`${offending} is set by the supervisor for a networked sandbox, not by you`);
   }
@@ -71,7 +85,7 @@ export async function run(deps: Deps, raw: Record<string, unknown>): Promise<Too
   const params: SandboxRunParams = {
     image: args.image,
     cmd: args.cmd,
-    ...(args.env === undefined ? {} : { env: args.env }),
+    ...(Object.keys(env).length === 0 ? {} : { env }),
     ...(args.network === undefined ? {} : { network: args.network }),
     ...(args.timeout_sec === undefined ? {} : { limits: { timeout_sec: args.timeout_sec } }),
   };

@@ -1,0 +1,29 @@
+// Install to /etc/polkit-1/rules.d/49-mycelium-plans.rules on the worker VM.
+//
+// The node supervisor runs as the unprivileged `mycelium` user and wraps every
+// plan agent in a transient systemd scope:
+//
+//     systemd-run --scope --slice=mycelium-plans --unit=mycelium-plan-<id> ...
+//
+// (packages/supervisor/src/drivers/cgroup.ts). A non-root user cannot start a
+// transient unit without polkit permission, so without this rule every agent
+// spawn fails with "Failed to start transient scope unit: Access denied" and no
+// plan can ever run - the supervisor accepts the plan, then rejects every task
+// dispatch with 409 agent_not_accepting.
+//
+// This grants exactly that and nothing else: manage-units, only for the
+// `mycelium` user, only for units named mycelium-plan-*. The slice itself and
+// the supervisor unit are still root-owned and untouched.
+
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units") {
+    return;
+  }
+  if (subject.user !== "mycelium") {
+    return;
+  }
+  var unit = action.lookup("unit");
+  if (unit && unit.indexOf("mycelium-plan-") === 0) {
+    return polkit.Result.YES;
+  }
+});
