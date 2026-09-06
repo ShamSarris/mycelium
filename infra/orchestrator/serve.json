@@ -11,8 +11,9 @@
     "Funnel is never enabled here. Funnel traffic is public and carries no identity headers at all,",
     "so it would arrive at a loopback listener as an unauthenticated request from Serve.",
     "",
-    "Apply with:  tailscale serve set --config /etc/mycelium/serve.json",
-    "Check with:  tailscale serve status"
+    "REFERENCE SHAPE ONLY - not applied directly. Current Tailscale has no 'serve set --config'.",
+    "Apply imperatively:  sudo tailscale serve --bg --https=443 http://127.0.0.1:8080",
+    "Check with:          tailscale serve status"
   ],
   "TCP": {
     "443": {

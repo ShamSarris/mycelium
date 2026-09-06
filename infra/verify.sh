@@ -142,10 +142,13 @@ orchestrator)
   fi
 
   if [ -n "${GITEA_BASE_URL:-}" ]; then
-    if curl -fsS --max-time 5 "${GITEA_BASE_URL}/api/v1/version" >/dev/null 2>&1; then
+    # /api/healthz is unauthenticated; /api/v1/* is gated when
+    # REQUIRE_SIGNIN_VIEW = true (which the runbook keeps on), so probing it
+    # would 403 on a perfectly healthy Gitea.
+    if curl -fsS --max-time 5 "${GITEA_BASE_URL}/api/healthz" >/dev/null 2>&1; then
       pass "Gitea answers at ${GITEA_BASE_URL}"
     else
-      fail "Gitea does not answer at ${GITEA_BASE_URL}" "\$ curl ${GITEA_BASE_URL}/api/v1/version"
+      fail "Gitea does not answer at ${GITEA_BASE_URL}" "\$ curl ${GITEA_BASE_URL}/api/healthz"
     fi
   else
     skip "Gitea check" "GITEA_BASE_URL is not set in this shell — source /etc/mycelium/orchestrator.env"
@@ -190,15 +193,22 @@ worker)
   fi
 
   if require_cmd systemd-run; then
-    if systemd-run --scope --quiet --slice=mycelium-plans /bin/true >/dev/null 2>&1; then
-      pass "a transient scope can be started in the slice"
+    # As the service user, not root: the supervisor is unprivileged, and a
+    # root-only pass here hid a missing polkit install on the first bring-up
+    # (every agent spawn then 409s with "Access denied").
+    if runuser -u mycelium -- systemd-run --scope --quiet --slice=mycelium-plans \
+        --unit=mycelium-plan-verify /bin/true >/dev/null 2>&1; then
+      pass "the mycelium user can start a transient scope in the slice"
     else
-      fail "cannot start a scope in mycelium-plans" \
-        "\$ systemd-run --scope --slice=mycelium-plans /bin/true"
+      fail "the mycelium user cannot start a scope in mycelium-plans" \
+        "install polkitd + worker/49-mycelium-plans.rules; test: runuser -u mycelium -- systemd-run --scope --slice=mycelium-plans /bin/true"
     fi
   fi
 
-  host=$(systemctl show mycelium-supervisor --property=Environment 2>/dev/null | tr ' ' '\n' | grep '^HOST=' | cut -d= -f2)
+  # From the EnvironmentFile the unit actually loads. `systemctl show
+  # -p Environment` does NOT expand EnvironmentFile=, so it always looked unset.
+  env_file=$(systemctl show mycelium-supervisor --property=EnvironmentFiles --value 2>/dev/null | awk '{print $1}')
+  host=$(grep -h '^HOST=' "${env_file:-/etc/mycelium/supervisor.env}" 2>/dev/null | tail -1 | cut -d= -f2)
   case "${host}" in
     0.0.0.0 | :: | '')
       fail "HOST is '${host:-unset}'" "loadConfig refuses a wildcard: B19 authenticates the orchestrator by peer address, which only works on the tailnet interface" ;;
