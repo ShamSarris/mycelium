@@ -33,7 +33,6 @@ packages/contracts/     the plan and event schemas, and their validators
 packages/orchestrator/  the control plane: validation, approval, the DAG dispatcher, events, the dashboard
 packages/supervisor/    one daemon per worker VM: environments, the sandbox broker, the egress proxy
 packages/worker/        the plan agent: the host-owned model loop, its tools, its budget
-skills/plan/            the Claude skill that authors and submits plans
 infra/                  systemd units, credentials, gVisor, Serve, and the bring-up runbook
 migrations/             Postgres DDL, numbered and roll-forward only
 ```
