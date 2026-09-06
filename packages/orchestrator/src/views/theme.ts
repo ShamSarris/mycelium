@@ -114,6 +114,12 @@ button.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,tra
    under them, and a card with nothing wrong is visually silent. */
 .server{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;}
 .server .name{font:600 13px/1.3 var(--sans);}
+.row{display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap;}
+.row a[aria-current="page"]{color:var(--fg);text-decoration:underline;}
+
+/* The shape of a window, in the width of the card it sits in. Stroke takes
+   currentColor so it stays on the accent without repeating the hex. */
+.spark{display:block;width:100%;height:2.2rem;margin:.4rem 0;color:var(--accent);}
 
 ul{padding-left:1.05rem;margin:.3rem 0;}
 li{margin:.15rem 0;}

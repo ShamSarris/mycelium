@@ -154,13 +154,22 @@ describe('the nav', () => {
   });
 
   /**
-   * They are stubs until the next phase, and they should say so rather than
-   * render an empty page that looks broken.
+   * Every tab is built now. Asserting each renders its own heading is the
+   * cheapest guard against the nav becoming four routes onto one page — and
+   * against a stub surviving the phase that was supposed to replace it.
    */
-  it('says what each unbuilt page is for, rather than looking broken', async () => {
-    for (const url of ['/ui/monitor']) {
+  it('gives every tab a page of its own, and leaves no stub behind', async () => {
+    const heading: Record<string, RegExp> = {
+      '/ui': /Needs attention/,
+      '/ui/projects': /Projects/,
+      '/ui/servers': /Servers/,
+      '/ui/monitor': /Throughput/,
+    };
+
+    for (const [url, expected] of Object.entries(heading)) {
       const { body } = await page(url);
-      expect(body.toLowerCase(), url).toMatch(/not built yet|coming|will show/);
+      expect(body, url).toMatch(expected);
+      expect(body.toLowerCase(), url).not.toContain('not built yet');
     }
   });
 });

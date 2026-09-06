@@ -4,6 +4,7 @@ import { HttpError } from '../errors.js';
 import { requireOperator } from '../auth/operator.js';
 import { acknowledgeAlert, listAlerts } from '../services/alerts.js';
 import { queryEvents } from '../services/events.js';
+import { monitorSummary, parseWindowDays } from '../services/monitor.js';
 import {
   approvePlan,
   cancelPlan,
@@ -17,12 +18,12 @@ import {
 import { getProjectRow, listProjects } from '../services/projects.js';
 import { listAgents } from '../services/supervisorsRegistry.js';
 import { renderPage, version, type PageParts } from '../views/html.js';
+import { monitorPage } from '../views/monitor.js';
 import { overviewPage } from '../views/overview.js';
 import { planPage } from '../views/plan.js';
 import { projectPage, projectsPage } from '../views/projects.js';
 import { serversPage } from '../views/servers.js';
 import { viewAgent, viewPlan } from '../views/model.js';
-import { stubPage } from '../views/stub.js';
 
 /**
  * The dashboard: server-rendered pages over the same services the JSON routes
@@ -96,20 +97,11 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     return html(reply, renderPage(serversPage(await serversModel(deps, now)), now));
   });
 
-  /**
-   * The page the next phase fills in. It ships now so the nav is whole and the
-   * shell can be judged before anything is built on top of it.
-   */
-  const STUBS = [
-    ['monitor', '/ui/monitor', 'monitor', 'what has run, what failed, and where the tokens went.'],
-  ] as const;
-
-  for (const [nav, path, title, willShow] of STUBS) {
-    app.get(path, async (request, reply) => {
-      requireOperator(request, deps.config);
-      return html(reply, renderPage(stubPage(nav, title, willShow), deps.clock.now()));
-    });
-  }
+  app.get('/ui/monitor', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return html(reply, renderPage(monitorPage(await monitorModel(deps, request, now)), now));
+  });
 
   /**
    * The fragment routes. Each renders the same `PageParts` its document route
@@ -151,6 +143,12 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
     requireOperator(request, deps.config);
     const now = deps.clock.now();
     return fragments(reply, serversPage(await serversModel(deps, now)), now);
+  });
+
+  app.get('/ui/live/monitor', async (request, reply) => {
+    requireOperator(request, deps.config);
+    const now = deps.clock.now();
+    return fragments(reply, monitorPage(await monitorModel(deps, request, now)), now);
   });
 
   for (const action of ['approve', 'reject', 'cancel'] as const) {
@@ -330,6 +328,16 @@ async function serversModel(deps: Deps, now: Date) {
         .map(viewPlan),
     })),
   };
+}
+
+/**
+ * The aggregates, over a window taken from the query string. An unusable
+ * `days` falls back to a week rather than 400ing: it is a stale bookmark or a
+ * typo, and the operator asked for the monitor, not for an error page.
+ */
+async function monitorModel(deps: Deps, request: FastifyRequest, now: Date) {
+  const { days } = request.query as { days?: string };
+  return { now, summary: await monitorSummary(deps, parseWindowDays(days)) };
 }
 
 function isTerminal(plan: PlanRow): boolean {
