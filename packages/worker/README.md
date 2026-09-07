@@ -1,11 +1,15 @@
 # @mycelium/worker — the plan agent
 
 One process per plan, started by the [supervisor](../supervisor/README.md) and torn down with the
-environment. It listens on a unix socket, runs one task at a time through a host-owned agent loop,
-and reports what happened. It holds the plan's credentials and is assumed prompt-injectable, so
-nothing in it is a containment boundary — that is the supervisor's egress proxy and the sandbox.
+environment. It listens on a unix socket, runs one task at a time through the Claude Agent SDK's
+`query()` loop (`runner/agent-sdk.ts`), and reports what happened. It holds the plan's credentials
+and is assumed prompt-injectable, so nothing in it is a containment boundary — that is the
+supervisor's egress proxy and the sandbox.
 
-Specified in ticket 0004.
+Specified in ticket 0004. The original build ran a host-owned agent loop over a `ModelTransport`
+seam; `tickets/agent-sdk-migration/` (tickets 09–14, 2026-09) replaced that loop with the Claude
+Agent SDK, which now owns the loop, conversation state, and context compaction. `tickets/0004`'s §7
+is annotated as historical rather than rewritten.
 
 ## The two sockets
 
@@ -38,8 +42,6 @@ missing one throws at startup rather than failing a task later.
 | `CLAUDE_CONFIG_DIR` | sibling of `WORKDIR` named `claude-config` | the Agent SDK's own state (sessions, auto-memory, connector config). Ticket 15: the supervisor injects a real one nested in `runDir`; the fallback here only matters for local dev or a test with no supervisor |
 | `MODEL_ID` | `claude-opus-5` | |
 | `MODEL_EFFORT` | `high` | `low` … `max` |
-| `MODEL_MAX_TOKENS` | `64000` | dead: nothing outside `config.ts` reads it any more now that the budget is cost-denominated (D30), pending ticket 14's cleanup |
-| `BYTES_PER_TOKEN` | `3` | dead for the same reason, pending the same cleanup |
 | `MAX_CONCURRENT_SUBAGENTS` | `2` | passed straight to `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Ticket 15: the supervisor derives this from its own memory ceiling (`deriveMaxConcurrentSubagents`) and injects it — `MAX_CONCURRENT_AGENTS` no longer exists. The default here only matters with no supervisor (local dev, a test) |
 | `FILE_READ_MAX_BYTES` / `FILE_WRITE_MAX_BYTES` | `256 KiB` / `1 MiB` | |
 | `LIST_FILES_MAX_ENTRIES` | `500` | |
@@ -48,25 +50,44 @@ missing one throws at startup rather than failing a task later.
 | `STATUS_RETRY_LIMIT` / `STATUS_RETRY_WINDOW_MS` | `3` / `30000` | |
 | `SHUTDOWN_GRACE_MS` / `SHUTDOWN_STATUS_TIMEOUT_MS` | `4000` / `2000` | both under B15's five seconds |
 
-`MODEL_MAX_TOKENS` and `BYTES_PER_TOKEN` are listed because `config.ts` still declares them as of
-this write-up (ticket 15) — they are dead code left for ticket 14 (running concurrently) to remove.
-If it has by the time you read this and they are gone from `config.ts`, drop these two rows too.
+*(2026-09-07: `MODEL_MAX_TOKENS` and `BYTES_PER_TOKEN` used to be listed here as dead variables
+pending ticket 14's cleanup. Ticket 14 has since removed both from `config.ts`, so the rows are
+gone from this table too. `fileReadMaxBytes` / `fileWriteMaxBytes` / `listFilesMaxEntries` below are
+now the same kind of leftover — ticket 10 deleted the `read_file`/`write_file`/`list_files` tools
+they bounded, but `config.ts` and its test still declare all three. Flagged for the operator, not
+removed here — it is source code, out of this ticket's scope.)*
 
 ## Tools
 
-`sandbox` (a gVisor container with the checkout at `/workspace`), `read_file` / `write_file` /
-`list_files` (host-side, confined to the checkout), `git` (host-side, holds the bot token), and
-`task_complete` / `task_failed`. Every call is validated host-side against the same schema sent to
-the provider; a failed call comes back as a tool result the model can correct, never as an
-exception.
+*(2026-09-07: rewritten. `tickets/agent-sdk-migration/10-tools-as-mcp-server.md` and
+`11-agent-sdk-runner.md` replaced the three custom file tools this section used to describe
+(`read_file`, `write_file`, `list_files`) with the SDK's built-in file tools, described below.)*
+
+Two groups. The worker's own four tools — `sandbox`, `git`, `task_complete`, `task_failed`
+(`runner/tools.ts`) — are declared as an in-process MCP server with Zod schemas and validated the
+same way as before, just through `createSdkMcpServer()` instead of hand-written JSON Schema and
+`domain/args.ts`. `sandbox` runs a command in the gVisor container with the checkout mounted at
+`/workspace`; `git` holds the bot token and commits/pushes host-side; `task_complete` /
+`task_failed` are the only way a task ends.
+
+Reading and editing files no longer goes through custom tools. The Agent SDK's own built-in
+`Read`/`Write`/`Edit`/`Glob`/`Grep` are enabled instead, contained by a `PreToolUse` hook
+(`runner/containment.ts`, ticket 12) that rejects any absolute path escaping the checkout — the
+same containment rules `domain/paths.ts` always enforced, wired into the one place the SDK lets a
+host deny a tool call before it runs. **`Bash` is deliberately not enabled**: the verification
+spike's `/proc` environ-leak question (Q7, `tickets/agent-sdk-migration/01-findings.md`) came back
+FAIL, so a `Bash` tool could read the agent's own process environment (and the credentials in it)
+in a way the sandbox cannot. `tickets/agent-sdk-migration/17-credential-relocation.md` is a
+placeholder follow-up for that; it exists but is not implemented.
 
 A task ends only when one of the terminating tools is called. Text alone does not end it: the model
 gets one nudge and then the task fails `no_terminal_call`.
 
 ## Running it
 
-Nothing here needs the network. The whole suite runs against a scripted transport and in-memory
-fakes:
+Nothing here needs the network. The whole suite runs against a `FakeTaskRunner` (the `TaskRunner`
+seam ticket 09 introduced above `runner/agent-sdk.ts`) and in-memory fakes for the broker, the
+orchestrator client, and git:
 
 ```bash
 pnpm vitest run packages/worker
@@ -77,9 +98,13 @@ Two suites are opt-in:
 
 - `packages/worker/test/drivers-git.test.ts` needs `git` on `PATH` and skips itself without it. It
   builds a real repository and a real bare remote in a temp directory.
-- `packages/worker/test/integration/` **spends real money**. It needs `WORKER_LIVE_TESTS=1` and a
-  real `MODEL_API_KEY`, and makes three calls: one for usage, one to prove the cache prefix is
-  actually being read back, one for a tool call.
+- `packages/worker/test/integration/live-model.test.ts` **spends real money**. It needs
+  `WORKER_LIVE_TESTS=1` and a real `MODEL_API_KEY`, and runs the actual Agent SDK runner end to
+  end: a trivial task completing with a real non-zero cost, confirmation that the model can never
+  reach a tool outside the declared set (`Bash` included), and — for ticket 12's `PreToolUse`
+  containment hook, which is otherwise only checked against the SDK's shipped `.d.ts` types — a
+  live check that `file_path` really arrives absolute and that a `deny` decision really blocks the
+  call.
 
 ```bash
 WORKER_LIVE_TESTS=1 MODEL_API_KEY=sk-ant-... pnpm vitest run packages/worker/test/integration

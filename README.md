@@ -16,13 +16,21 @@ documents a clone does not carry.
 
 ## Status, honestly
 
-Everything is built and tested — 892 tests, four packages, the plan skill and the dashboard.
+Everything is built and tested — 1,131 passing tests (19 more skipped by default: opt-in suites
+that need Docker/gVisor, a real `git`, or a live model call), four packages, the plan skill and the
+dashboard. The worker runs its plan agent on the Claude Agent SDK rather than a host-rolled loop
+(`tickets/agent-sdk-migration/`), and every budget in the system is cost-denominated
+(`max_cost_microusd` / `limits.cost_microusd`), not token-denominated.
 
 **The system has never run end to end.** Every test is against a fake, a local Postgres, or a
 temporary git repository. `infra/` was written from the configuration the code reads and
 self-checked as far as a development machine allows, but no VM has ever executed a plan. Your first
 bring-up is the first run, and it will find things. [`infra/verify.sh`](infra/verify.sh) exists to
-make that discovery orderly rather than mysterious.
+make that discovery orderly rather than mysterious. *(2026-09-07: this remains true after the
+Agent SDK migration above — that migration's own end-to-end smoke run,
+`tickets/agent-sdk-migration/16-docs-and-smoke.md` §6.5, has not yet been performed. It needs a real
+worker VM, a real Gitea instance, and a real `MODEL_API_KEY`, and is the real acceptance gate for
+that ticket set; until it runs, this status note stands as written.)*
 
 ---
 
@@ -32,7 +40,7 @@ make that discovery orderly rather than mysterious.
 packages/contracts/     the plan and event schemas, and their validators
 packages/orchestrator/  the control plane: validation, approval, the DAG dispatcher, events, the dashboard
 packages/supervisor/    one daemon per worker VM: environments, the sandbox broker, the egress proxy
-packages/worker/        the plan agent: the host-owned model loop, its tools, its budget
+packages/worker/        the plan agent: runs the Claude Agent SDK, its tools, its cost budget
 infra/                  systemd units, credentials, gVisor, Serve, and the bring-up runbook
 migrations/             Postgres DDL, numbered and roll-forward only
 ```
@@ -107,8 +115,9 @@ runbook that walks through them in order is kept outside this repository, with t
   workers are alive.
 - **Cancel is your brake.** A running plan can be cancelled from the dashboard or with
   `mycelium.mjs`; it cascades to the tasks and tears the environment down.
-- **A plan cannot outrun its budget.** Each task has a token ceiling, each plan has one across all
-  its tasks, and the API key has a provider-side limit behind both.
+- **A plan cannot outrun its budget.** Each task has a cost ceiling (`limits.cost_microusd`), each
+  plan has one across all its tasks (`max_cost_microusd`, required), and the API key has a
+  provider-side limit behind both.
 - **Deploying a change:** `git pull && pnpm install --frozen-lockfile && pnpm build`, then
   `systemctl restart`. Restart the supervisor last — it re-attaches to plans whose agents are still
   answering rather than killing them.
