@@ -47,7 +47,7 @@ export function isAlert(event: AlertCandidate): boolean {
   if (event.type === 'limit.exceeded') {
     // A task's own ceiling is the failure policy's business and shows on the
     // plan. A *plan's* ceiling stopped everything and nothing else will say so.
-    return payload.limit === 'plan_tokens';
+    return payload.limit === 'plan_cost';
   }
 
   if (event.type === 'environment.state_changed') {

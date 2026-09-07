@@ -10,6 +10,9 @@ export interface PlanManifest {
   head_sha: string | null;
   pr_url: string | null;
   criteria: Array<{ type: string; path?: string; passed: boolean }>;
+  /** Authoritative spend (D30, future_work/database.md:59). Primary figure. */
+  cost_spent_microusd: number;
+  /** Detail figure, kept beside the authoritative cost. */
   tokens_spent: number;
   wall_clock_ms: number;
   terminal_reason: string | null;
@@ -34,8 +37,16 @@ export async function runFinalize(deps: Deps, planId: string): Promise<void> {
   const plan = rows[0];
   if (!plan || plan.state !== 'finalizing') return;
 
-  const { rows: taskRows } = await deps.pool.query<{ state: TaskState; tokens_spent: number }>(
-    'SELECT state, tokens_spent FROM tasks WHERE plan_id = $1',
+  // cost_spent_microusd is bigint; `pg` would hand it back as a string, but
+  // src/db/pool.ts installs a global INT8 type parser that coerces it to a JS
+  // number for every query in this process (safe well past 2^31 — see
+  // src/services/dispatcher.ts's budgetExhausted).
+  const { rows: taskRows } = await deps.pool.query<{
+    state: TaskState;
+    tokens_spent: number;
+    cost_spent_microusd: number;
+  }>(
+    'SELECT state, tokens_spent, cost_spent_microusd FROM tasks WHERE plan_id = $1',
     [planId],
   );
 
@@ -80,6 +91,7 @@ export async function runFinalize(deps: Deps, planId: string): Promise<void> {
     head_sha: headSha,
     pr_url: prUrl,
     criteria: outcomes,
+    cost_spent_microusd: taskRows.reduce((sum, t) => sum + t.cost_spent_microusd, 0),
     tokens_spent: taskRows.reduce((sum, t) => sum + t.tokens_spent, 0),
     wall_clock_ms: plan.running_at === null ? 0 : now.getTime() - plan.running_at.getTime(),
     terminal_reason: plan.terminal_reason,

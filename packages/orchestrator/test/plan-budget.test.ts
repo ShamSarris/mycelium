@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { tick } from '../src/services/dispatcher.js';
-import { buildTestApp, bearer, type TestHarness } from './helpers/app.js';
+import { buildTestApp, bearer, operatorHeaders, type TestHarness } from './helpers/app.js';
 import {
   eventTypes,
   planState,
@@ -11,7 +11,7 @@ import {
 } from './helpers/fixtures.js';
 
 /**
- * The plan-level token ceiling (ticket 0005 part B).
+ * The plan-level cost ceiling (ticket 0005 part B; cost-denominated by D30).
  *
  * Enforced at dispatch, inside the transaction that already locks the plan row
  * to serialise claiming — which is what makes the check and the claim atomic
@@ -32,15 +32,28 @@ beforeEach(async () => {
   await h.reset();
 });
 
-/** Two tasks, no dependency between them, each with the same ceiling. */
-function twoTaskPlan(taskTokens: number, maxTokens?: number): Record<string, unknown> {
+/**
+ * Two tasks, each with the same ceiling. `second` depends on `first` so the
+ * two dispatch sequentially without needing a concurrency-limit override —
+ * `max_concurrent_agents` no longer exists on the plan schema (D30's cost
+ * migration dropped it; see ticket 05's report for the concurrency gap).
+ */
+function twoTaskPlan(taskCostMicrousd: number, maxCostMicrousd: number): Record<string, unknown> {
   return {
     ...validPlan(),
-    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
-    max_concurrent_agents: 1,
+    max_cost_microusd: maxCostMicrousd,
     tasks: [
-      { id: 'first', description: 'The first thing.', limits: { tokens: taskTokens, wall_clock_min: 10 } },
-      { id: 'second', description: 'The second thing.', limits: { tokens: taskTokens, wall_clock_min: 10 } },
+      {
+        id: 'first',
+        description: 'The first thing.',
+        limits: { cost_microusd: taskCostMicrousd, wall_clock_min: 10 },
+      },
+      {
+        id: 'second',
+        description: 'The second thing.',
+        depends_on: ['first'],
+        limits: { cost_microusd: taskCostMicrousd, wall_clock_min: 10 },
+      },
     ],
   };
 }
@@ -54,11 +67,16 @@ function report(running: RunningPlan, taskId: string, payload: Record<string, un
   });
 }
 
-/** Runs the first task to completion, spending what the test says. */
-async function finishFirst(running: RunningPlan, tokensSpent: number): Promise<void> {
+/**
+ * Runs the first task to completion, spending what the test says (in
+ * microusd). The status report itself promotes `second` to `ready` (it
+ * `depends_on: ['first']`); the caller's own `tick()` is what attempts to
+ * dispatch it, which is where the budget gate is checked.
+ */
+async function finishFirst(running: RunningPlan, costSpentMicrousd: number): Promise<void> {
   const first = running.taskIds.first as string;
   await report(running, first, { state: 'running' });
-  await report(running, first, { state: 'done', tokens_spent: tokensSpent });
+  await report(running, first, { state: 'done', cost_spent_microusd: costSpentMicrousd });
 }
 
 describe('a plan inside its ceiling', () => {
@@ -73,8 +91,8 @@ describe('a plan inside its ceiling', () => {
   });
 
   it('dispatches a task that fits exactly', async () => {
-    // 9000 spent, a 1000-token ceiling, and a 10000 plan ceiling: it fits, and
-    // a boundary that refused here would be off by one in the expensive
+    // 9000 spent, a 1000-microusd ceiling, and a 10000 plan ceiling: it fits,
+    // and a boundary that refused here would be off by one in the expensive
     // direction.
     const running = await runningPlan(h, twoTaskPlan(1000, 10_000));
     await finishFirst(running, 9000);
@@ -112,6 +130,8 @@ describe('a plan that would cross its ceiling', () => {
       [running.planId],
     );
     expect(rows[0]?.terminal_reason).toContain('plan_budget_exceeded');
+    // Operator-facing prose is money, not a bare integer.
+    expect(rows[0]?.terminal_reason).toContain('$');
   });
 
   it('still writes a manifest, which is why it halts rather than stalls', async () => {
@@ -120,14 +140,13 @@ describe('a plan that would cross its ceiling', () => {
 
     await tick(h.deps);
 
-    const { rows } = await h.pool.query<{ manifest: { tokens_spent?: number } | null }>(
-      'SELECT manifest FROM plans WHERE id = $1',
-      [running.planId],
-    );
+    const { rows } = await h.pool.query<{
+      manifest: { cost_spent_microusd?: number; tokens_spent?: number } | null;
+    }>('SELECT manifest FROM plans WHERE id = $1', [running.planId]);
     // A plan that ran out of budget is a plan the operator has to be told
-    // about, with the numbers attached.
+    // about, with the numbers attached. Cost is the authoritative figure.
     expect(rows[0]?.manifest).not.toBeNull();
-    expect(rows[0]?.manifest?.tokens_spent).toBe(900);
+    expect(rows[0]?.manifest?.cost_spent_microusd).toBe(900);
   });
 
   it('records it as an event rather than only as a state change', async () => {
@@ -143,9 +162,9 @@ describe('a plan that would cross its ceiling', () => {
     const running = await runningPlan(h, twoTaskPlan(1000, 1500));
     const first = running.taskIds.first as string;
     await report(running, first, { state: 'running' });
-    // A failed attempt spent its tokens too; not counting them would let a
-    // plan of failures run for ever.
-    await report(running, first, { state: 'failed', tokens_spent: 900, error: 'nope' });
+    // A failed attempt spent its cost too; not counting it would let a plan
+    // of failures run for ever.
+    await report(running, first, { state: 'failed', cost_spent_microusd: 900, error: 'nope' });
 
     await tick(h.deps);
 
@@ -161,27 +180,39 @@ describe('a plan that would cross its ceiling', () => {
       expect(await taskState(h, taskId)).toBe('cancelled');
     }
   });
+
+  it('compares numerically past 2^31 microusd, not lexicographically', async () => {
+    // Past int4 (2^31 = 2147483648 microusd, ~$2147.48). The sum is cast
+    // `::bigint` in SQL so it does not overflow there; on the JS side
+    // src/db/pool.ts's global INT8 type parser hands it back as a number, and
+    // this proves the gate compares that total numerically against the
+    // ceiling rather than falling back to string comparison somewhere.
+    const running = await runningPlan(h, twoTaskPlan(1000, 2_200_001_500));
+    await finishFirst(running, 2_200_001_000);
+
+    await tick(h.deps);
+
+    // 2_200_001_000 spent plus a 1000 ceiling is 2_200_002_000, past the
+    // 2_200_001_500 plan ceiling.
+    expect(await planState(h, running.planId)).toBe('failed');
+  });
 });
 
-describe('a plan that names no ceiling', () => {
-  it('gets the sum of its task ceilings, so nothing written before this changes', async () => {
-    const running = await runningPlan(h, twoTaskPlan(1000));
-    await finishFirst(running, 900);
+describe('a plan proposed without a cost ceiling', () => {
+  it('is rejected at the schema gate rather than defaulted', async () => {
+    // max_cost_microusd is required (D30): unlike a token ceiling it cannot
+    // be summed from the tasks without a price table, so there is no default
+    // left. The old "sums the task ceilings" behaviour is gone entirely.
+    const plan = { ...validPlan() } as Record<string, unknown>;
+    delete plan.max_cost_microusd;
 
-    await tick(h.deps);
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/plans',
+      headers: operatorHeaders(),
+      payload: plan,
+    });
 
-    expect(await taskState(h, running.taskIds.second as string)).toBe('dispatched');
-    expect(await planState(h, running.planId)).toBe('running');
-  });
-
-  it('is still halted once the implied ceiling is reached', async () => {
-    const running = await runningPlan(h, twoTaskPlan(1000));
-    // The implied ceiling is 2000; 1500 spent leaves less than the next
-    // task's 1000.
-    await finishFirst(running, 1500);
-
-    await tick(h.deps);
-
-    expect(await planState(h, running.planId)).toBe('failed');
+    expect(response.statusCode).toBe(400);
   });
 });

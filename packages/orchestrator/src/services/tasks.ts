@@ -9,9 +9,20 @@ import { PLAN_COLUMNS, TASK_COLUMNS, type PlanRow, type TaskRow } from './plans.
 
 export interface StatusReport {
   state: 'running' | 'done' | 'failed';
+  /** Authoritative spend (D30). Both units are reported; cost drives the budget gate. */
+  cost_spent_microusd?: number;
+  /** Detail figure, kept beside the authoritative cost. */
   tokens_spent?: number;
   result?: unknown;
   error?: string;
+}
+
+function nonNegativeNumberField(candidate: Record<string, unknown>, field: string): number | undefined {
+  const value = candidate[field];
+  if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+    throw HttpError.badRequest('invalid_report', `${field} must be a non-negative number`);
+  }
+  return typeof value === 'number' ? value : undefined;
 }
 
 function parseReport(body: unknown): StatusReport {
@@ -23,16 +34,15 @@ function parseReport(body: unknown): StatusReport {
   if (state !== 'running' && state !== 'done' && state !== 'failed') {
     throw HttpError.badRequest('invalid_report', 'state must be running, done, or failed');
   }
-  const tokens = candidate.tokens_spent;
-  if (tokens !== undefined && (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens < 0)) {
-    throw HttpError.badRequest('invalid_report', 'tokens_spent must be a non-negative number');
-  }
+  const costMicrousd = nonNegativeNumberField(candidate, 'cost_spent_microusd');
+  const tokens = nonNegativeNumberField(candidate, 'tokens_spent');
   const error = candidate.error;
   if (error !== undefined && typeof error !== 'string') {
     throw HttpError.badRequest('invalid_report', 'error must be a string');
   }
 
   const report: StatusReport = { state };
+  if (typeof costMicrousd === 'number') report.cost_spent_microusd = costMicrousd;
   if (typeof tokens === 'number') report.tokens_spent = tokens;
   if (typeof error === 'string') report.error = error;
   if (candidate.result !== undefined) report.result = candidate.result;
@@ -91,10 +101,18 @@ export async function reportTaskStatus(
       await client.query(
         `UPDATE tasks
             SET state = 'done', finished_at = $2, updated_at = $2,
-                tokens_spent = GREATEST(tokens_spent, $3), result = $4,
+                tokens_spent = GREATEST(tokens_spent, $3),
+                cost_spent_microusd = GREATEST(cost_spent_microusd, $5),
+                result = $4,
                 lease_expires_at = NULL
           WHERE id = $1`,
-        [task.id, now, report.tokens_spent ?? 0, JSON.stringify(report.result ?? null)],
+        [
+          task.id,
+          now,
+          report.tokens_spent ?? 0,
+          JSON.stringify(report.result ?? null),
+          report.cost_spent_microusd ?? 0,
+        ],
       );
       await recordTaskStateChange(client, deps, {
         planId: plan.id,
@@ -110,6 +128,7 @@ export async function reportTaskStatus(
 
     const state = await applyFailure(client, deps, plan, task, report.error ?? 'reported_failure', {
       tokensSpent: report.tokens_spent ?? 0,
+      costSpentMicrousd: report.cost_spent_microusd ?? 0,
     });
     await notifyWake(client);
     return { task_id: task.id, state };
@@ -141,7 +160,7 @@ export async function applyFailure(
   plan: PlanRow,
   task: TaskRow,
   reason: string,
-  options: { tokensSpent?: number } = {},
+  options: { tokensSpent?: number; costSpentMicrousd?: number } = {},
 ): Promise<TaskState> {
   const now = deps.clock.now();
   const policy = task.spec.failure_policy ?? { type: 'halt' as const };
@@ -153,9 +172,10 @@ export async function applyFailure(
       `UPDATE tasks
           SET state = 'ready', execution_attempt = $2, error = $3, updated_at = $4,
               lease_expires_at = NULL, dispatch_id = NULL, started_at = NULL,
-              tokens_spent = GREATEST(tokens_spent, $5)
+              tokens_spent = GREATEST(tokens_spent, $5),
+              cost_spent_microusd = GREATEST(cost_spent_microusd, $6)
         WHERE id = $1`,
-      [task.id, attempt, reason, now, options.tokensSpent ?? 0],
+      [task.id, attempt, reason, now, options.tokensSpent ?? 0, options.costSpentMicrousd ?? 0],
     );
     await recordTaskStateChange(client, deps, {
       planId: plan.id,
@@ -171,9 +191,10 @@ export async function applyFailure(
     `UPDATE tasks
         SET state = 'failed', finished_at = $2, error = $3, updated_at = $2,
             execution_attempt = $4, lease_expires_at = NULL,
-            tokens_spent = GREATEST(tokens_spent, $5)
+            tokens_spent = GREATEST(tokens_spent, $5),
+            cost_spent_microusd = GREATEST(cost_spent_microusd, $6)
       WHERE id = $1`,
-    [task.id, now, reason, attempt, options.tokensSpent ?? 0],
+    [task.id, now, reason, attempt, options.tokensSpent ?? 0, options.costSpentMicrousd ?? 0],
   );
   await recordTaskStateChange(client, deps, {
     planId: plan.id,

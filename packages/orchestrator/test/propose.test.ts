@@ -170,13 +170,13 @@ describe('POST /plans - rejection', () => {
           id: 'a',
           description: 'first',
           depends_on: ['b'],
-          limits: { tokens: 10, wall_clock_min: 1 },
+          limits: { cost_microusd: 10, wall_clock_min: 1 },
         },
         {
           id: 'b',
           description: 'second',
           depends_on: ['a'],
-          limits: { tokens: 10, wall_clock_min: 1 },
+          limits: { cost_microusd: 10, wall_clock_min: 1 },
         },
       ],
     });
@@ -194,7 +194,7 @@ describe('POST /plans - rejection', () => {
           id: 'a',
           description: 'first',
           depends_on: ['nope'],
-          limits: { tokens: 10, wall_clock_min: 1 },
+          limits: { cost_microusd: 10, wall_clock_min: 1 },
         },
       ],
     });

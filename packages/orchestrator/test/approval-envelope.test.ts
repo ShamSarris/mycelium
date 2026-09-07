@@ -54,15 +54,13 @@ describe('the plan the operator is asked to approve', () => {
   it('shows every ceiling the plan will actually run under', async () => {
     const { plan_id } = await propose(h, {
       ...validPlan(),
-      max_tokens: 120_000,
-      max_concurrent_agents: 3,
+      max_cost_microusd: 120_000,
       env_ttl_min: 90,
     });
 
     const { plan } = await show(plan_id);
 
-    expect(plan.max_tokens).toBe(120_000);
-    expect(plan.max_concurrent_agents).toBe(3);
+    expect(plan.max_cost_microusd).toBe(120_000);
     expect(plan.env_ttl_min).toBe(90);
   });
 
@@ -74,15 +72,10 @@ describe('the plan the operator is asked to approve', () => {
     const { plan } = await show(plan_id);
 
     expect(plan.non_goals).toEqual([]);
-    expect(plan.max_concurrent_agents).toBe(2);
     expect(plan.env_ttl_min).toBe(240);
-    // The implied ceiling is the sum of the task ceilings (ticket 0005), which
-    // is a real number the operator should see rather than a blank.
-    const tasks = (validPlan().tasks as Array<{ limits: { tokens: number } }>).reduce(
-      (sum, task) => sum + task.limits.tokens,
-      0,
-    );
-    expect(plan.max_tokens).toBe(tasks);
+    // max_cost_microusd is required (D30) and no longer defaulted or summed
+    // from the tasks — the plan gets back exactly what it named.
+    expect(plan.max_cost_microusd).toBe((validPlan() as { max_cost_microusd: number }).max_cost_microusd);
   });
 
   it('still keeps the token hash out of the response', async () => {

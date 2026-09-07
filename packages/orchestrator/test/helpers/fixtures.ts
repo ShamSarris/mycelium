@@ -4,7 +4,13 @@ import { tick } from '../../src/services/dispatcher.js';
 import type { TestHarness } from './app.js';
 import { OPERATOR, operatorHeaders } from './app.js';
 
-/** The smallest plan that satisfies baseline section 6, as a mutable object. */
+/**
+ * The smallest plan that satisfies baseline section 6, as a mutable object.
+ *
+ * Cost-denominated (D30): `limits.cost_microusd` replaces `limits.tokens`,
+ * and `max_cost_microusd` is required — there is no price table here to
+ * synthesise one from the tasks, so a generous headroom is named explicitly.
+ */
 export function validPlan(): Record<string, unknown> {
   return {
     goal: 'Add a health endpoint to the orchestrator.',
@@ -15,16 +21,17 @@ export function validPlan(): Record<string, unknown> {
       {
         id: 'a-write-tests',
         description: 'Write failing tests for GET /healthz.',
-        limits: { tokens: 50000, wall_clock_min: 20 },
+        limits: { cost_microusd: 50000, wall_clock_min: 20 },
       },
       {
         id: 'b-implement',
         description: 'Implement GET /healthz until the tests pass.',
         depends_on: ['a-write-tests'],
-        limits: { tokens: 100000, wall_clock_min: 30 },
+        limits: { cost_microusd: 100000, wall_clock_min: 30 },
       },
     ],
     success_criteria: [{ type: 'all_tasks_done' }],
+    max_cost_microusd: 500_000,
   };
 }
 
@@ -36,7 +43,7 @@ export function singleTaskPlan(overrides: Record<string, unknown> = {}): Record<
       {
         id: 'only',
         description: 'Do the one thing.',
-        limits: { tokens: 1000, wall_clock_min: 10 },
+        limits: { cost_microusd: 1000, wall_clock_min: 10 },
       },
     ],
     ...overrides,

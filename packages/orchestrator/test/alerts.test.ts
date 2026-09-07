@@ -79,7 +79,7 @@ describe('listAlerts', () => {
     await emit(plan_id, {
       type: 'limit.exceeded',
       severity: 'warn',
-      payload: { limit: 'plan_tokens' },
+      payload: { limit: 'plan_cost' },
     });
     await emit(plan_id, {
       type: 'environment.state_changed',

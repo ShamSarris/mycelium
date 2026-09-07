@@ -34,7 +34,8 @@ export interface TaskDispatch {
   dispatch_id: string;
   execution_attempt: number;
   description: string;
-  limits: { tokens: number; wall_clock_min: number };
+  limits: { cost_microusd: number; wall_clock_min: number };
+  /** Detail figure; cost_spent_microusd is authoritative (D30). */
   tokens_spent_so_far: number;
 }
 

@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import type { Deps } from '../deps.js';
 import { HttpError } from '../errors.js';
 import { requireOperator } from '../auth/operator.js';
-import { planTokenCeiling } from '../domain/budget.js';
 import {
   approvePlan,
   cancelPlan,
@@ -151,8 +150,11 @@ function publicPlan(plan: Awaited<ReturnType<typeof getPlanRow>>) {
     // reads as "no limit" and every one of these has one.
     non_goals: plan.spec.non_goals ?? [],
     egress: plan.spec.egress ?? [],
-    max_tokens: planTokenCeiling(plan.spec),
-    max_concurrent_agents: plan.spec.max_concurrent_agents ?? 2,
+    max_cost_microusd: plan.spec.max_cost_microusd,
+    // Stopgap: max_concurrent_agents left the plan schema (agent-sdk-migration
+    // tickets 03/04); ticket 13 replaces this with a supervisor-derived value.
+    // Hardcoded until then.
+    max_concurrent_agents: 2,
     env_ttl_min: plan.spec.env_ttl_min ?? 240,
     proposed_at: plan.proposed_at,
     proposed_by: plan.proposed_by,

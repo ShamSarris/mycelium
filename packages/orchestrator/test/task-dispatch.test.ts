@@ -49,10 +49,11 @@ async function taskRow(taskId: string) {
     lease_expires_at: Date | null;
     started_at: Date | null;
     tokens_spent: number;
+    cost_spent_microusd: number;
     error: string | null;
   }>(
     `SELECT state::text AS state, dispatch_id, dispatch_attempt, execution_attempt,
-            lease_expires_at, started_at, tokens_spent, error
+            lease_expires_at, started_at, tokens_spent, cost_spent_microusd, error
        FROM tasks WHERE id = $1`,
     [taskId],
   );
@@ -83,7 +84,7 @@ describe('claiming and dispatching', () => {
     expect(request?.dispatch_id).toBe(row?.dispatch_id);
     expect(request?.execution_attempt).toBe(0);
     expect(request?.description).toBe('Do the one thing.');
-    expect(request?.limits).toEqual({ tokens: 1000, wall_clock_min: 10 });
+    expect(request?.limits).toEqual({ cost_microusd: 1000, wall_clock_min: 10 });
     expect(request?.tokens_spent_so_far).toBe(0);
   });
 
@@ -92,14 +93,22 @@ describe('claiming and dispatching', () => {
     expect(await eventTypes(h, running.planId)).toContain('task.dispatched');
   });
 
-  it('honours max_concurrent_agents', async () => {
+  // `max_concurrent_agents` was removed from the plan schema by the D30 cost
+  // migration (ticket agent-sdk-migration/03,04) with no replacement landed
+  // yet — concurrency control awaits ticket agent-sdk-migration/13
+  // (supervisor-derived concurrency). There is currently no way to configure
+  // a plan's dispatch concurrency to anything other than the hardcoded
+  // default of 2; see ticket 05's completion report for the gap. Skipped
+  // rather than deleted so the coverage this used to provide is not lost to
+  // silence.
+  it.skip('honours max_concurrent_agents', async () => {
     const plan = {
       ...validPlan(),
       max_concurrent_agents: 1,
       tasks: [
-        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'a', description: 'one', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { cost_microusd: 10, wall_clock_min: 5 } },
       ],
     };
     await runningPlan(h, plan);
@@ -108,14 +117,16 @@ describe('claiming and dispatching', () => {
     expect(h.supervisors.taskDispatches).toHaveLength(1);
   });
 
-  it('dispatches up to the limit and no further', async () => {
+  it('dispatches up to the (currently hardcoded) default of 2 and no further', async () => {
+    // `max_concurrent_agents` is no longer a settable plan field (see the
+    // skipped test above); this now exercises the built-in default rather
+    // than an operator-chosen limit.
     const plan = {
       ...validPlan(),
-      max_concurrent_agents: 2,
       tasks: [
-        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'a', description: 'one', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { cost_microusd: 10, wall_clock_min: 5 } },
       ],
     };
     await runningPlan(h, plan);
@@ -155,19 +166,23 @@ describe('acknowledgement and completion', () => {
     expect(row?.started_at).not.toBeNull();
   });
 
-  it('records tokens spent and the result on done', async () => {
+  it('records both cost and tokens spent, and the result, on done', async () => {
     const running = await runningPlan(h, singleTaskPlan());
     const taskId = running.taskIds['only'] as string;
 
     await report(running, taskId, { state: 'running' });
     await report(running, taskId, {
       state: 'done',
+      cost_spent_microusd: 9999,
       tokens_spent: 4321,
       result: { commit: 'abc' },
     });
 
     const row = await taskRow(taskId);
     expect(row?.state).toBe('done');
+    // cost_spent_microusd is authoritative; tokens_spent is the detail figure
+    // kept beside it. Both are reported and both are stored.
+    expect(row?.cost_spent_microusd).toBe(9999);
     expect(row?.tokens_spent).toBe(4321);
   });
 
@@ -240,7 +255,7 @@ describe('failure policy', () => {
           {
             id: 'only',
             description: 'flaky',
-            limits: { tokens: 10, wall_clock_min: 5 },
+            limits: { cost_microusd: 10, wall_clock_min: 5 },
             failure_policy: { type: 'retry', max_attempts: 2 },
           },
         ],
@@ -265,7 +280,7 @@ describe('failure policy', () => {
           {
             id: 'only',
             description: 'flaky',
-            limits: { tokens: 10, wall_clock_min: 5 },
+            limits: { cost_microusd: 10, wall_clock_min: 5 },
             failure_policy: { type: 'retry', max_attempts: 2 },
           },
         ],
@@ -292,7 +307,7 @@ describe('failure policy', () => {
           {
             id: 'only',
             description: 'flaky',
-            limits: { tokens: 100, wall_clock_min: 5 },
+            limits: { cost_microusd: 100, wall_clock_min: 5 },
             failure_policy: { type: 'retry', max_attempts: 3 },
           },
         ],
@@ -312,11 +327,10 @@ describe('failure policy', () => {
   it('halts the plan and cancels the siblings when the policy is halt', async () => {
     const plan = {
       ...validPlan(),
-      max_concurrent_agents: 2,
       tasks: [
-        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'a', description: 'one', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'c', description: 'three', limits: { cost_microusd: 10, wall_clock_min: 5 } },
       ],
     };
     const running = await runningPlan(h, plan);
@@ -420,17 +434,19 @@ describe('status route authorisation', () => {
 
 describe('concurrent ticks', () => {
   it('claim disjoint tasks, so no task is dispatched twice', async () => {
+    // Two tasks, matching the hardcoded default of 2 concurrent agents
+    // (`max_concurrent_agents` is no longer a settable plan field — see the
+    // skipped test above): both ticks race for both slots, and the property
+    // under test — SKIP LOCKED claiming cannot double-dispatch a task — does
+    // not depend on how many slots there are.
     const plan = {
       ...validPlan(),
-      max_concurrent_agents: 4,
       tasks: [
-        { id: 'a', description: 'one', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'b', description: 'two', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'c', description: 'three', limits: { tokens: 10, wall_clock_min: 5 } },
-        { id: 'd', description: 'four', limits: { tokens: 10, wall_clock_min: 5 } },
+        { id: 'a', description: 'one', limits: { cost_microusd: 10, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { cost_microusd: 10, wall_clock_min: 5 } },
       ],
     };
-    // Provision without dispatching, so both ticks race for all four tasks.
+    // Provision without dispatching, so both ticks race for both tasks.
     h.supervisors.taskThrows = true;
     const running = await runningPlan(h, plan);
     h.supervisors.taskThrows = false;
@@ -444,7 +460,7 @@ describe('concurrent ticks', () => {
     await Promise.all([tick(h.deps), tick(h.deps)]);
 
     const dispatched = h.supervisors.taskDispatches.map((d) => d.request.task_id);
-    expect(dispatched).toHaveLength(4);
-    expect(new Set(dispatched).size).toBe(4);
+    expect(dispatched).toHaveLength(2);
+    expect(new Set(dispatched).size).toBe(2);
   });
 });

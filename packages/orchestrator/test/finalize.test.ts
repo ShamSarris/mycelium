@@ -34,14 +34,17 @@ async function manifestOf(planId: string): Promise<PlanManifest | null> {
   return rows[0]?.manifest ?? null;
 }
 
-async function completeTheTask(running: RunningPlan, tokens = 1200): Promise<void> {
+async function completeTheTask(running: RunningPlan, costMicrousd = 1200): Promise<void> {
   const taskId = running.taskIds['only'] as string;
   for (const state of ['running', 'done']) {
     await h.app.inject({
       method: 'POST',
       url: `/plans/${running.planId}/tasks/${taskId}/status`,
       headers: bearer(running.planToken),
-      payload: state === 'done' ? { state, tokens_spent: tokens } : { state },
+      payload:
+        state === 'done'
+          ? { state, cost_spent_microusd: costMicrousd, tokens_spent: costMicrousd }
+          : { state },
     });
   }
 }
@@ -70,6 +73,7 @@ describe('a plan whose criteria pass', () => {
       head_sha: 'a1b2c3d4e5f6',
       pr_url: 'http://gitea.local/mycelium/demo/pulls/1',
       criteria: [{ type: 'all_tasks_done', passed: true }],
+      cost_spent_microusd: 4200,
       tokens_spent: 4200,
       terminal_reason: null,
     });
@@ -104,15 +108,14 @@ describe('a plan whose criteria pass', () => {
   it('sums the spend across every task', async () => {
     const plan = {
       ...validPlan(),
-      max_concurrent_agents: 2,
       tasks: [
-        { id: 'a', description: 'one', limits: { tokens: 100, wall_clock_min: 5 } },
-        { id: 'b', description: 'two', limits: { tokens: 100, wall_clock_min: 5 } },
+        { id: 'a', description: 'one', limits: { cost_microusd: 100, wall_clock_min: 5 } },
+        { id: 'b', description: 'two', limits: { cost_microusd: 100, wall_clock_min: 5 } },
       ],
     };
     const running = await runningPlan(h, plan);
 
-    for (const [local, tokens] of [
+    for (const [local, spend] of [
       ['a', 30],
       ['b', 70],
     ] as const) {
@@ -122,12 +125,14 @@ describe('a plan whose criteria pass', () => {
         method: 'POST',
         url,
         headers: bearer(running.planToken),
-        payload: { state: 'done', tokens_spent: tokens },
+        payload: { state: 'done', cost_spent_microusd: spend, tokens_spent: spend },
       });
     }
 
     await tick(h.deps);
-    expect((await manifestOf(running.planId))?.tokens_spent).toBe(100);
+    const manifest = await manifestOf(running.planId);
+    expect(manifest?.cost_spent_microusd).toBe(100);
+    expect(manifest?.tokens_spent).toBe(100);
   });
 });
 

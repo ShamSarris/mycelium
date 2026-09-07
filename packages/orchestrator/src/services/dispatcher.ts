@@ -3,7 +3,7 @@ import type { Plan } from '@mycelium/contracts';
 import { withTransaction } from '../db/pool.js';
 import type { Deps } from '../deps.js';
 import { nextAttemptDelay } from '../domain/backoff.js';
-import { planTokenCeiling, wouldCrossCeiling } from '../domain/budget.js';
+import { planCostCeiling, wouldCrossCeiling } from '../domain/budget.js';
 import { selectSupervisors } from '../domain/selection.js';
 import type { TaskState } from '../domain/states.js';
 import type { AgentTarget, PlanDispatch, TaskDispatch } from '../clients/supervisor.js';
@@ -194,7 +194,10 @@ async function buildPlanDispatch(
     },
     orchestrator_token: secrets.orchestratorToken,
     egress: spec.egress ?? [],
-    max_concurrent_agents: spec.max_concurrent_agents ?? 2,
+    // Stopgap: max_concurrent_agents left the plan schema (agent-sdk-migration
+    // tickets 03/04); ticket 13 replaces this with a supervisor-derived value.
+    // Hardcoded until then.
+    max_concurrent_agents: 2,
     env_ttl_min: spec.env_ttl_min ?? 240,
   };
 }
@@ -310,7 +313,8 @@ async function dispatchReadyTasks(deps: Deps): Promise<void> {
     const agent = agentRows[0];
     if (!agent) continue;
 
-    const max = (plan.spec as Plan).max_concurrent_agents ?? 2;
+    // Stopgap, same as above — hardcoded until ticket 13 lands.
+    const max = 2;
 
     // Claim one at a time so a supervisor that starts rejecting stops the loop
     // rather than draining the whole queue into a dead VM.
@@ -324,8 +328,13 @@ async function dispatchReadyTasks(deps: Deps): Promise<void> {
   }
 }
 
+/** Renders microusd as dollars for operator-facing prose (halt reasons, manifests). */
+function formatMicrousd(microusd: number): string {
+  return `$${(microusd / 1_000_000).toFixed(2)}`;
+}
+
 /**
- * The plan-level token ceiling (ticket 0005 part B).
+ * The plan-level cost ceiling (ticket 0005 part B; cost-denominated by D30).
  *
  * Called inside the claim transaction, after the plan row is locked, so the
  * check and the claim cannot be split by a concurrent tick. It looks at the
@@ -343,7 +352,10 @@ async function budgetExhausted(
   deps: Deps,
   plan: PlanRow,
 ): Promise<boolean> {
-  const { rows: next } = await client.query<{ id: string; spec: { limits: { tokens: number } } }>(
+  const { rows: next } = await client.query<{
+    id: string;
+    spec: { limits: { cost_microusd: number } };
+  }>(
     `SELECT id, spec FROM tasks
       WHERE plan_id = $1 AND state = 'ready'
       ORDER BY local_id
@@ -354,25 +366,32 @@ async function budgetExhausted(
   if (candidate === undefined) return false;
 
   // Every other task on the plan, whatever state it ended in — a failed
-  // attempt spent its tokens too, and not counting those would let a plan of
+  // attempt spent its cost too, and not counting those would let a plan of
   // failures run until the provider cut it off.
   //
-  // The candidate's own spend is excluded because `limits.tokens` is task-wide
-  // across attempts: a retry's worst case is still that one ceiling, and
-  // counting both would charge the same allowance twice and make retries
-  // impossible.
+  // The candidate's own spend is excluded because `limits.cost_microusd` is
+  // task-wide across attempts: a retry's worst case is still that one
+  // ceiling, and counting both would charge the same allowance twice and make
+  // retries impossible.
+  //
+  // `::bigint`, not `::int`: microusd overflows int4 at $2,147.48. `pg` hands
+  // bigint back as a string by default, but src/db/pool.ts installs a global
+  // INT8 type parser that coerces it to a JS number for every query in this
+  // process — safe well past 2^31, since realistic plan budgets stay far
+  // under Number.MAX_SAFE_INTEGER. The `?? 0` fallback still guards the case
+  // where no rows are returned at all.
   const { rows: spend } = await client.query<{ total: number }>(
-    `SELECT coalesce(sum(tokens_spent), 0)::int AS total
+    `SELECT coalesce(sum(cost_spent_microusd), 0)::bigint AS total
        FROM tasks WHERE plan_id = $1 AND id <> $2`,
     [plan.id, candidate.id],
   );
   const spentOnOtherTasks = spend[0]?.total ?? 0;
-  const planCeiling = planTokenCeiling(plan.spec as Plan);
+  const planCeiling = planCostCeiling(plan.spec as Plan);
 
   if (
     !wouldCrossCeiling({
       spentOnOtherTasks,
-      taskCeiling: candidate.spec.limits.tokens,
+      taskCeiling: candidate.spec.limits.cost_microusd,
       planCeiling,
     })
   ) {
@@ -385,10 +404,10 @@ async function budgetExhausted(
     planId: plan.id,
     taskId: candidate.id,
     payload: {
-      limit: 'plan_tokens',
+      limit: 'plan_cost',
       allowed: planCeiling,
       spent_on_other_tasks: spentOnOtherTasks,
-      next_task_ceiling: candidate.spec.limits.tokens,
+      next_task_ceiling: candidate.spec.limits.cost_microusd,
     },
   });
 
@@ -396,7 +415,7 @@ async function budgetExhausted(
     client,
     deps,
     plan,
-    `plan_budget_exceeded: ${spentOnOtherTasks} tokens spent on other tasks against a ceiling of ${planCeiling}, and the next task may use ${candidate.spec.limits.tokens}`,
+    `plan_budget_exceeded: ${formatMicrousd(spentOnOtherTasks)} spent on other tasks against a ceiling of ${formatMicrousd(planCeiling)}, and the next task may use ${formatMicrousd(candidate.spec.limits.cost_microusd)}`,
   );
 
   return true;

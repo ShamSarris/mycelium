@@ -32,7 +32,7 @@ describe('isAlert', () => {
 
   it('takes a plan halted for budget', () => {
     expect(
-      isAlert(event({ type: 'limit.exceeded', severity: 'warn', payload: { limit: 'plan_tokens' } })),
+      isAlert(event({ type: 'limit.exceeded', severity: 'warn', payload: { limit: 'plan_cost' } })),
     ).toBe(true);
   });
 

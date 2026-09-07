@@ -108,7 +108,7 @@ describe('HttpSupervisorClient task and teardown', () => {
     dispatch_id: 'd-1',
     execution_attempt: 0,
     description: 'do it',
-    limits: { tokens: 10, wall_clock_min: 5 },
+    limits: { cost_microusd: 10, wall_clock_min: 5 },
     tokens_spent_so_far: 0,
   };
 
