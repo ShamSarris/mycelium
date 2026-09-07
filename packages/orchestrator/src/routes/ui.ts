@@ -9,10 +9,12 @@ import {
   approvePlan,
   cancelPlan,
   getPlanRow,
+  countPlans,
   listPlans,
   listTasks,
   rejectPlan,
   taskRollup,
+  PLAN_PAGE_SIZE,
   type PlanRow,
 } from '../services/plans.js';
 import { getProjectRow, listProjects } from '../services/projects.js';
@@ -68,7 +70,7 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/ui', async (request, reply) => {
     requireOperator(request, deps.config);
     const now = deps.clock.now();
-    return html(reply, renderPage(overviewPage(await overviewModel(deps, now)), now));
+    return html(reply, renderPage(overviewPage(await overviewModel(deps, request, now)), now));
   });
 
   app.get('/ui/plans/:id', async (request, reply) => {
@@ -116,7 +118,7 @@ export function registerUiRoutes(app: FastifyInstance, deps: Deps): void {
   app.get('/ui/live/overview', async (request, reply) => {
     requireOperator(request, deps.config);
     const now = deps.clock.now();
-    return fragments(reply, overviewPage(await overviewModel(deps, now)), now);
+    return fragments(reply, overviewPage(await overviewModel(deps, request, now)), now);
   });
 
   app.get('/ui/live/plans/:id', async (request, reply) => {
@@ -243,32 +245,64 @@ function fragments(reply: FastifyReply, parts: PageParts, now: Date): FastifyRep
  * fragment route both go through here rather than each assembling their own,
  * which is the only reason the two are guaranteed to agree.
  */
-async function overviewModel(deps: Deps, now: Date) {
-  const [plans, alerts, agents] = await Promise.all([
-    listPlans(deps, {}),
+async function overviewModel(deps: Deps, request: FastifyRequest, now: Date) {
+  const { page } = request.query as { page?: string };
+
+  // Two of the overview's four sections read plans for a purpose that has
+  // nothing to do with the table's page: needs-attention must announce every
+  // proposed plan, and a worker's placement count must count every plan on
+  // that VM. Paginating one query for all three is exactly how a decision
+  // stops being announced because it fell to page two — so the active plans
+  // are their own query, and only the table is paged.
+  const [total, active, alerts, agents] = await Promise.all([
+    countPlans(deps, {}),
+    listPlans(deps, { states: ACTIVE_STATES }),
     listAlerts(deps),
     listAgents(deps),
   ]);
+
+  const pageCount = Math.max(1, Math.ceil(total / PLAN_PAGE_SIZE));
+  const current = clampPage(page, pageCount);
+  const plans = await listPlans(deps, {
+    limit: PLAN_PAGE_SIZE,
+    offset: (current - 1) * PLAN_PAGE_SIZE,
+  });
 
   const counts = await taskRollup(deps, plans.map((plan) => plan.id));
 
   return {
     now,
-    proposed: plans.filter((plan) => plan.state === 'proposed').map(viewPlan),
+    proposed: active.filter((plan) => plan.state === 'proposed').map(viewPlan),
     plans: plans.map((plan) => ({
       ...viewPlan(plan),
       costMicrousd: counts.get(plan.id)?.costMicrousd ?? 0,
       taskCounts: counts.get(plan.id)?.states ?? {},
     })),
+    pager: { page: current, pageCount, path: '/ui' },
     alerts,
     workers: agents.map((agent) => ({
       ...viewAgent(agent),
-      planIds: plans
-        .filter((plan) => plan.agent_id === agent.id && !isTerminal(plan))
-        .map((plan) => plan.id),
+      // `active` is already every non-terminal plan, so the `isTerminal`
+      // filter this used to carry is now the query's own job.
+      planIds: active.filter((plan) => plan.agent_id === agent.id).map((plan) => plan.id),
     })),
     healthyWithinMinutes: deps.config.heartbeatHealthyMinutes,
   };
+}
+
+/** Every state `isTerminal` says is not terminal. Named here so the two cannot drift. */
+const ACTIVE_STATES = ['proposed', 'queued', 'provisioning', 'running'] as const;
+
+/**
+ * A page number from a query string is operator input via the address bar: it
+ * can be absent, a word, a negative, or past the end. None of those is worth
+ * a 400 on a dashboard — landing on the nearest real page is what someone
+ * editing the url by hand actually wants.
+ */
+function clampPage(value: string | undefined, pageCount: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.min(parsed, pageCount);
 }
 
 /** As `overviewModel`, for one plan. Throws the same 404 both routes need. */

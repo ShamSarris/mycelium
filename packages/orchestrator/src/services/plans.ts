@@ -516,16 +516,33 @@ export async function releasePlanResources(
 }
 
 /**
- * There is no pagination anywhere in v1, so this is a cap rather than a page
- * size. Exported because a page that hits it has to say so: silently showing
- * 200 of 340 plans is the kind of lie an operator only catches by counting.
+ * The cap on an unpaginated list. Exported because a page that hits it has to
+ * say so: silently showing 200 of 340 plans is the kind of lie an operator
+ * only catches by counting. Still the cap for every caller that does not ask
+ * for a page — the project page's plan table is the one that remains.
  */
 export const PLAN_LIST_LIMIT = 200;
 
-export async function listPlans(
-  deps: Deps,
-  filter: { state?: string; projectId?: string },
-): Promise<PlanRow[]> {
+/**
+ * The overview's plan table pages five at a time. Small on purpose: the
+ * overview answers "what is happening now", and a long history pushed the
+ * worker table and the alert list below the fold on every screen.
+ */
+export const PLAN_PAGE_SIZE = 5;
+
+export interface PlanFilter {
+  state?: string;
+  /** Several states at once — the overview needs every non-terminal plan. */
+  states?: readonly string[];
+  projectId?: string;
+}
+
+/**
+ * The shared WHERE, so `listPlans` and `countPlans` cannot disagree about
+ * which rows they are talking about. A pager built on two different filters
+ * reports a page count for one set and renders rows from another.
+ */
+function planWhere(filter: PlanFilter): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -533,18 +550,46 @@ export async function listPlans(
     params.push(filter.state);
     conditions.push(`state = $${params.length}`);
   }
+  if (filter.states !== undefined) {
+    params.push([...filter.states]);
+    conditions.push(`state = ANY($${params.length})`);
+  }
   if (filter.projectId !== undefined) {
     params.push(filter.projectId);
     conditions.push(`project_id = $${params.length}`);
   }
 
-  const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`;
+  return { where: conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`, params };
+}
+
+export async function listPlans(
+  deps: Deps,
+  filter: PlanFilter & { limit?: number; offset?: number },
+): Promise<PlanRow[]> {
+  const { where, params } = planWhere(filter);
+
+  params.push(filter.limit ?? PLAN_LIST_LIMIT);
+  const limit = `$${params.length}`;
+  params.push(filter.offset ?? 0);
+  const offset = `$${params.length}`;
+
   const { rows } = await deps.pool.query<PlanRow>(
     `SELECT ${PLAN_COLUMNS} FROM plans${where}
-      ORDER BY proposed_at DESC LIMIT ${PLAN_LIST_LIMIT}`,
+      ORDER BY proposed_at DESC LIMIT ${limit} OFFSET ${offset}`,
     params,
   );
   return rows;
+}
+
+/** How many rows the same filter matches, for the pager's "of N". */
+export async function countPlans(deps: Deps, filter: PlanFilter): Promise<number> {
+  const { where, params } = planWhere(filter);
+  const { rows } = await deps.pool.query<{ total: string }>(
+    `SELECT count(*)::bigint AS total FROM plans${where}`,
+    params,
+  );
+  // `pg` hands back a bigint aggregate as a string, always.
+  return Number(rows[0]?.total ?? 0);
 }
 
 export interface TaskRollup {

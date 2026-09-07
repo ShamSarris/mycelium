@@ -236,3 +236,149 @@ describe('what the pages must never contain', () => {
     expect(body).toContain('&lt;script&gt;');
   });
 });
+
+/**
+ * The overview's plan table used to render every plan the 200-row cap
+ * returned. These pin the pager, and — more importantly — pin the two
+ * sections that read the *same* plan list for a different purpose: needs
+ * attention and the worker placement counts. Paginating the query those two
+ * share is exactly how a proposed plan silently stops being announced.
+ */
+describe('the overview plan pager', () => {
+  /** A region of the rendered page, so an assertion cannot match markup another section owns. */
+  function region(body: string, id: string): string {
+    const start = body.indexOf(`data-region="${id}"`);
+    expect(start, `no region ${id} on the page`).toBeGreaterThan(-1);
+    return body.slice(start, body.indexOf('</section>', start));
+  }
+
+  /**
+   * Newest last: `proposed_at DESC` puts the final one at the top of page 1.
+   * The goal, not the id, is what identifies a plan in these assertions — a
+   * UUIDv7's leading hex is its millisecond timestamp, so the eight-character
+   * prefix the table renders is shared by every plan proposed in the same
+   * few minutes and distinguishes none of them.
+   */
+  async function proposePlans(count: number): Promise<void> {
+    for (let i = 0; i < count; i += 1) {
+      await propose(h, costPlan({ goal: `plan number ${i}` }));
+      h.clock.advance(60_000);
+    }
+  }
+
+  it('shows five plans on the first page and no more', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui')).body, 'plans');
+
+    for (let i = 1; i < 6; i += 1) expect(plans).toContain(`plan number ${i}`);
+    expect(plans).not.toContain('plan number 0');
+  });
+
+  it('shows the older plans on the second page, and only those', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui?page=2')).body, 'plans');
+
+    expect(plans).toContain('plan number 0');
+    for (let i = 1; i < 6; i += 1) expect(plans).not.toContain(`plan number ${i}`);
+  });
+
+  it('says which page it is on and how many there are', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui')).body, 'plans');
+
+    expect(plans).toMatch(/page 1 of 2/i);
+  });
+
+  it('offers next but not prev on the first page', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui')).body, 'plans');
+
+    expect(plans).toContain('/ui?page=2');
+    expect(plans).not.toContain('/ui?page=0');
+  });
+
+  it('offers prev but not next on the last page', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui?page=2')).body, 'plans');
+
+    expect(plans).toContain('/ui?page=1');
+    expect(plans).not.toContain('/ui?page=3');
+  });
+
+  it('renders no pager at all when everything fits on one page', async () => {
+    await proposePlans(3);
+
+    const plans = region((await page('/ui')).body, 'plans');
+
+    expect(plans).not.toMatch(/page 1 of/i);
+  });
+
+  /**
+   * The section that exists to stop a decision being missed must not be
+   * paginated by a table that has nothing to do with it.
+   */
+  it('keeps every proposed plan under needs attention, whatever page the table is on', async () => {
+    await proposePlans(6);
+
+    const attention = region((await page('/ui?page=2')).body, 'attention');
+
+    for (let i = 0; i < 6; i += 1) expect(attention).toContain(`plan number ${i}`);
+  });
+
+  it('counts a worker placement from every page, not just the visible one', async () => {
+    await proposePlans(6);
+    // Registered after the plans, not before: proposing advances the clock
+    // six minutes, which is long enough to make an earlier heartbeat stale
+    // and render this row as "stuck here" rather than "placed".
+    const supervisor = await registerSupervisor(h);
+    await h.pool.query(`UPDATE plans SET agent_id = $1, state = 'running'`, [supervisor.id]);
+
+    const workers = region((await page('/ui')).body, 'workers');
+
+    expect(workers).toContain('6 placed');
+  });
+
+  it('carries the page into the live url, so a poll does not snap back to the first', async () => {
+    await proposePlans(6);
+
+    const body = (await page('/ui?page=2')).body;
+
+    expect(body).toContain('data-live="/ui/live/overview?page=2"');
+  });
+
+  it('serves the same page through the fragment route', async () => {
+    await proposePlans(6);
+
+    const fragment = await page('/ui/live/overview?page=2');
+    // The fragment carries every region, and needs-attention names all six
+    // plans — so this has to read the plans region, not the whole body.
+    const plans = JSON.parse(fragment.body).regions.plans.html as string;
+
+    expect(fragment.statusCode).toBe(200);
+    expect(plans).toContain('plan number 0');
+    expect(plans).not.toContain('plan number 5');
+  });
+
+  it('falls back to the first page for a page that is not a number', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui?page=banana')).body, 'plans');
+
+    expect(plans).toContain('plan number 5');
+    expect(plans).toMatch(/page 1 of 2/i);
+  });
+
+  it('clamps a page past the end to the last one, rather than rendering nothing', async () => {
+    await proposePlans(6);
+
+    const plans = region((await page('/ui?page=99')).body, 'plans');
+
+    expect(plans).toContain('plan number 0');
+    expect(plans).toMatch(/page 2 of 2/i);
+  });
+});

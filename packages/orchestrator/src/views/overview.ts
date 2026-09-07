@@ -16,10 +16,22 @@ import type { AgentView, PlanView } from './model.js';
  * say could never come back without a reload.
  */
 
+/**
+ * Where the plan table is in a longer list. `path` rather than a hardcoded
+ * `/ui` because the same table is rendered by the project page, which links
+ * to its own url — and one day may page too.
+ */
+export interface Pager {
+  page: number;
+  pageCount: number;
+  path: string;
+}
+
 interface OverviewInput {
   now: Date;
   proposed: PlanView[];
   plans: Array<PlanView & { costMicrousd: number; taskCounts: Record<string, number> }>;
+  pager: Pager;
   alerts: AlertRow[];
   workers: Array<AgentView & { planIds: string[] }>;
   healthyWithinMinutes: number;
@@ -29,12 +41,15 @@ export function overviewPage(input: OverviewInput): PageParts {
   return {
     title: 'overview',
     nav: 'overview',
-    live: '/ui/live/overview',
+    // The page has to survive the poll. Without it every refresh would drag
+    // the operator back to page 1 five seconds after they left it — the same
+    // reason the monitor page carries its `days` here.
+    live: `/ui/live/overview?page=${input.pager.page}`,
     attention: input.proposed.length,
     regions: [
       { id: 'attention', html: needsAttention(input.proposed) },
       { id: 'alerts', html: alertList(input.alerts) },
-      { id: 'plans', html: planTable(input.plans) },
+      { id: 'plans', html: planTable(input.plans, input.pager) },
       {
         id: 'workers',
         html: workerTable(input.workers, input.now, input.healthyWithinMinutes),
@@ -107,19 +122,55 @@ export function whyNotRunning(plan: PlanView): string {
   }
 }
 
-/** Exported because the project page shows the same table, and two of them would drift. */
+/**
+ * Prev/next and where you are. Rendered only when there is more than one
+ * page: a pager under a three-row table is noise that says nothing.
+ */
+function pagerControls(pager: Pager): string {
+  if (pager.pageCount <= 1) return '';
+
+  const prev =
+    pager.page > 1
+      ? html`<a href="${pager.path}?page=${pager.page - 1}">&larr; prev</a>`
+      : html`<span class="meta">&larr; prev</span>`;
+  const next =
+    pager.page < pager.pageCount
+      ? html`<a href="${pager.path}?page=${pager.page + 1}">next &rarr;</a>`
+      : html`<span class="meta">next &rarr;</span>`;
+
+  return html`<p class="meta">
+    ${raw(prev)} · page ${pager.page} of ${pager.pageCount} · ${raw(next)}
+  </p>`;
+}
+
+/**
+ * Exported because the project page shows the same table, and two of them
+ * would drift. The project page passes no pager and keeps the old cap
+ * behaviour; only the overview pages.
+ */
 export function planTable(
   plans: Array<PlanView & { costMicrousd: number; taskCounts: Record<string, number> }>,
+  pager?: Pager,
 ): string {
-  if (plans.length === 0) return html`<h2>Plans</h2><p class="empty">No plans yet.</p>`;
+  if (plans.length === 0) {
+    // An empty page 2 is a different thing from an empty system, and an
+    // operator who lands on one needs the way back rather than "no plans yet".
+    const empty =
+      pager !== undefined && pager.page > 1
+        ? html`<p class="empty">Nothing on this page.</p>${raw(pagerControls(pager))}`
+        : html`<p class="empty">No plans yet.</p>`;
+    return html`<h2>Plans</h2>${raw(empty)}`;
+  }
 
-  // There is no pagination in v1. A list that is exactly the cap is probably
-  // not the whole list, and saying so is the difference between a short
-  // history and a truncated one.
+  // Unpaginated callers still get the truncation warning: a list that is
+  // exactly the cap is probably not the whole list, and saying so is the
+  // difference between a short history and a truncated one.
   const capped =
-    plans.length < PLAN_LIST_LIMIT
-      ? ''
-      : html`<p class="meta">Showing the most recent ${PLAN_LIST_LIMIT}; there may be more.</p>`;
+    pager !== undefined
+      ? pagerControls(pager)
+      : plans.length < PLAN_LIST_LIMIT
+        ? ''
+        : html`<p class="meta">Showing the most recent ${PLAN_LIST_LIMIT}; there may be more.</p>`;
 
   return html`<h2>Plans</h2>
     <table>

@@ -87,7 +87,9 @@ describe('the document shell', () => {
   it('points every page at the fragment endpoint that refreshes it', async () => {
     const { plan_id } = await propose(h, validPlan());
 
-    expect((await page('/ui')).body).toContain('data-live="/ui/live/overview"');
+    // The overview carries its page, so the poll refreshes the page the
+    // operator is on rather than dragging them back to the first.
+    expect((await page('/ui')).body).toContain('data-live="/ui/live/overview?page=1"');
     expect((await page(`/ui/plans/${plan_id}`)).body).toContain(
       `data-live="/ui/live/plans/${plan_id}"`,
     );

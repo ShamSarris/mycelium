@@ -23,3 +23,7 @@ dist/
 .env.*
 !.env.example
 .DS_Store
+
+# Stray worktree checkouts left behind by agent sessions. Embedded git
+# repositories, so committing them adds gitlinks nobody can clone.
+.claude/worktrees/
