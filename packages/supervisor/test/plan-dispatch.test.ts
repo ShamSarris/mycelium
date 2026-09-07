@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CloneError } from '../src/drivers/git.js';
+import { teardown } from '../src/environments/teardown.js';
 import { buildTestApp, planDispatch, type TestHarness } from './helpers/app.js';
 
 let h: TestHarness;
@@ -64,9 +65,45 @@ describe('POST /plans - accepting a plan', () => {
       ORCHESTRATOR_URL: 'http://orchestrator.tailnet:8080',
       ORCHESTRATOR_TOKEN: 'per-plan-token',
       GITEA_BOT_TOKEN: 'gitea-bot-token',
-      MAX_CONCURRENT_AGENTS: '2',
     });
     expect(spec?.cwd).toBe(spec?.env.WORKDIR);
+  });
+
+  // Ticket 15: the Agent SDK spawns a `claude` subprocess that needs a
+  // writable config directory and an isolated HOME, and B13 means these must
+  // be deliberately injected rather than inherited.
+  it('gives the agent SDK an isolated HOME and CLAUDE_CONFIG_DIR inside the plan run directory', async () => {
+    await h.dispatch();
+
+    const [spec] = h.agents.started;
+    const runDir = path.join(h.stateDir, 'plans', PLAN_ID, 'run');
+    expect(spec?.env.HOME).toBe(runDir);
+    expect(spec?.env.CLAUDE_CONFIG_DIR).toBe(path.join(runDir, '.claude'));
+  });
+
+  // Ticket 13/15: the operator-authored plan cannot know what the VM can
+  // take, so the number is derived from the supervisor's own memory ceiling
+  // rather than carried on the dispatch.
+  it('derives MAX_CONCURRENT_SUBAGENTS instead of carrying MAX_CONCURRENT_AGENTS', async () => {
+    await h.dispatch();
+
+    const [spec] = h.agents.started;
+    // No AGENT_MEMORY_MAX_BYTES configured in this harness, so this is
+    // deriveMaxConcurrentSubagents's CONSERVATIVE_DEFAULT_WHEN_UNBOUNDED.
+    expect(spec?.env.MAX_CONCURRENT_SUBAGENTS).toBe('2');
+    expect(spec?.env).not.toHaveProperty('MAX_CONCURRENT_AGENTS');
+  });
+
+  it('derives MAX_CONCURRENT_SUBAGENTS from AGENT_MEMORY_MAX_BYTES when the supervisor has one configured', async () => {
+    const h2 = await buildTestApp({ agentMemoryMaxBytes: 3 * 1024 ** 3 });
+    try {
+      await h2.dispatch();
+      const [spec] = h2.agents.started;
+      // 3 GiB ceiling - 1 GiB parent reserve, at ~1 GiB/subagent = 2.
+      expect(spec?.env.MAX_CONCURRENT_SUBAGENTS).toBe('2');
+    } finally {
+      await h2.close();
+    }
   });
 
   it('takes the model key from the secret helper, never from its own environment', async () => {
@@ -281,5 +318,25 @@ describe('POST /plans - the environment on disk', () => {
     expect(await exists(path.join(root, 'repo'))).toBe(true);
     expect(await exists(path.join(root, 'run'))).toBe(true);
     expect(await readdir(path.join(h.stateDir, 'plans'))).toContain(PLAN_ID);
+  });
+
+  // Ticket 15: the SDK may not create CLAUDE_CONFIG_DIR itself, so
+  // provisioning does — and it must be gone afterwards, or it is a slow disk
+  // leak, one per plan, forever.
+  it('creates the per-plan Claude config directory', async () => {
+    await h.dispatch();
+
+    const claudeDir = path.join(h.stateDir, 'plans', PLAN_ID, 'run', '.claude');
+    expect(await exists(claudeDir)).toBe(true);
+  });
+
+  it('removes the Claude config directory on teardown', async () => {
+    await h.dispatch();
+    const claudeDir = path.join(h.stateDir, 'plans', PLAN_ID, 'run', '.claude');
+    expect(await exists(claudeDir)).toBe(true);
+
+    await teardown(h.deps, PLAN_ID, 'completion');
+
+    expect(await exists(claudeDir)).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ import { CloneError } from '../drivers/git.js';
 import { writeRecord } from './record.js';
 import { canAdmit } from '../domain/admission.js';
 import { isEgressRule } from '../domain/egress.js';
+import { deriveMaxConcurrentSubagents } from '../domain/concurrency.js';
 
 /**
  * What the orchestrator sends on `POST /plans`. Mirrors `PlanDispatch` in the
@@ -59,9 +60,16 @@ async function provision(deps: Deps, dispatch: PlanDispatch): Promise<void> {
   let brokerListening = false;
   let proxyListening = false;
 
+  const claudeConfigDir = path.join(runDir, '.claude');
+
   try {
     await mkdir(runDir, { recursive: true });
     await mkdir(workdir, { recursive: true });
+    // Ticket 15: HOME and CLAUDE_CONFIG_DIR must exist before the agent SDK's
+    // `claude` subprocess starts — not assumed to be created lazily. Nested
+    // under runDir/root, so teardown's `rm(root, { recursive: true })`
+    // removes it with everything else; nothing extra to clean up.
+    await mkdir(claudeConfigDir, { recursive: true });
 
     // The bot token ends up in .git/config inside the environment. Accepted:
     // the agent holds the same token by design, and the tree is scrubbed at
@@ -110,7 +118,16 @@ async function provision(deps: Deps, dispatch: PlanDispatch): Promise<void> {
         AGENT_SOCKET: brokerSocket,
         DISPATCH_SOCKET: dispatchSocket,
         WORKDIR: workdir,
-        MAX_CONCURRENT_AGENTS: String(dispatch.max_concurrent_agents),
+        // Isolated per plan, inside runDir, so nothing is shared between
+        // plans and teardown removes both with the rest of the environment.
+        HOME: runDir,
+        CLAUDE_CONFIG_DIR: claudeConfigDir,
+        // Ticket 13: the operator-authored plan cannot know what this VM can
+        // take; the supervisor derives it from its own memory ceiling on the
+        // plan's scope instead. MAX_CONCURRENT_AGENTS no longer exists.
+        MAX_CONCURRENT_SUBAGENTS: String(
+          deriveMaxConcurrentSubagents(deps.config.agentMemoryMaxBytes),
+        ),
       },
     });
 

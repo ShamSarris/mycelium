@@ -26,6 +26,16 @@ export interface SupervisorConfig {
   sandboxTimeoutSec: number;
   sandboxTimeoutCeilingSec: number;
 
+  /**
+   * The plan agent's own `systemd-run --scope` `MemoryMax`, in bytes.
+   * `undefined` when unset, which is what a slice with no per-scope ceiling
+   * looks like. Ticket 15: this is the single number both `CgroupAgentRunner`
+   * (the real ceiling) and `deriveMaxConcurrentSubagents` (the number derived
+   * from it, injected as `MAX_CONCURRENT_SUBAGENTS`) read, so the two can
+   * never disagree about what the scope can actually hold.
+   */
+  agentMemoryMaxBytes: number | undefined;
+
   outputHeadBytes: number;
   outputTailBytes: number;
   outputMaxBytes: number;
@@ -101,6 +111,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SupervisorConf
       1,
     ),
 
+    agentMemoryMaxBytes: optionalInteger(env.AGENT_MEMORY_MAX_BYTES, 'AGENT_MEMORY_MAX_BYTES', 1),
+
     outputHeadBytes: integer(env.OUTPUT_HEAD_BYTES, 'OUTPUT_HEAD_BYTES', 8192, 0),
     outputTailBytes: integer(env.OUTPUT_TAIL_BYTES, 'OUTPUT_TAIL_BYTES', 8192, 0),
     outputMaxBytes: integer(env.OUTPUT_MAX_BYTES, 'OUTPUT_MAX_BYTES', 10 * 1024 * 1024, 1),
@@ -140,6 +152,23 @@ function integer(
   minimum: number,
 ): number {
   if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || String(parsed) !== value.trim()) {
+    throw new Error(`${name} must be an integer, got ${value}`);
+  }
+  if (parsed < minimum) {
+    throw new Error(`${name} must be at least ${minimum}, got ${parsed}`);
+  }
+  return parsed;
+}
+
+/** Like `integer`, but genuinely absent rather than defaulted when unset. */
+function optionalInteger(
+  value: string | undefined,
+  name: string,
+  minimum: number,
+): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || String(parsed) !== value.trim()) {
     throw new Error(`${name} must be an integer, got ${value}`);

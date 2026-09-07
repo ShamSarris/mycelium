@@ -30,6 +30,7 @@ Everything comes from the environment through `loadConfig()`. Secrets do not: th
 | `TTL_GRACE_MIN` | `5` | How long past a plan's TTL to wait for the orchestrator before acting. |
 | `AGENT_COMMAND` | empty | argv for the plan agent, e.g. `/usr/bin/node /opt/mycelium/packages/worker/dist/src/index.js`. Empty means this node can accept no plan. |
 | `AGENT_SLICE` | unset | The slice the agent's transient scope is started in. **Not optional in deployment**: without it there is no scope to signal, and an agent left by a previous supervisor process cannot be killed at all (ticket 0004 gap 8). `infra/worker/mycelium-plans.slice` is the slice. |
+| `AGENT_MEMORY_MAX_BYTES` | unset | The plan agent's own scope `MemoryMax`, in bytes. Feeds two things from one number, so they cannot disagree: the real `systemd-run --scope --property=MemoryMax=...` ceiling (`drivers/cgroup.ts`), and `MAX_CONCURRENT_SUBAGENTS` (`deriveMaxConcurrentSubagents`, injected into the agent's environment — ticket 15). Unset means both fall back to their own conservative defaults rather than trusting an unbounded scope. |
 | `ALLOW_INSECURE_BIND` | unset | Test escape hatch. No unit file sets it. |
 
 **Why the bind address is checked.** B19 authenticates the orchestrator by its tailnet address. That is real authentication only because the process is on the WireGuard interface and nowhere else — a packet arriving there cannot forge its source. On a wildcard bind, one arriving on any other interface can, and the allowlist becomes decoration. `loadConfig()` therefore throws at boot on `0.0.0.0` or `::`.
@@ -81,6 +82,20 @@ SUPERVISOR_DOCKER_TESTS=1 SUPERVISOR_TEST_IMAGE=alpine:3.20 pnpm test
 ```
 
 It asserts the properties the fakes cannot: that the container runs under gVisor rather than the host kernel, that its root filesystem is read-only, that it has no route off the host on either the plan network or none at all, that it can still reach a listener on the network gateway where the proxy sits, and that the wall clock kills it.
+
+A second opt-in suite exercises the real `systemd-run --scope` kill path (ticket 15, Q5 — see
+`tickets/agent-sdk-migration/01-findings.md`), on Linux with systemd:
+
+```sh
+SUPERVISOR_SYSTEMD_TESTS=1 pnpm test -- packages/supervisor/test/integration/cgroup.test.ts
+```
+
+It proves the thing B15's five-second teardown actually rests on: killing the scope — whether via
+the process-group signal `environments/teardown.ts` sends to an agent this process started, or via
+`systemctl kill --kill-whom=all` reclaiming one it did not — terminates a grandchild process the
+agent spawned, not just the agent's own top-level PID. The Agent SDK's own internal abort/cleanup
+path is not what this guarantee rests on; it can orphan the `claude` subprocess it started (Q5).
+Needs root, or a user with polkit rights to manage its own scopes.
 
 ## What is not here
 

@@ -71,6 +71,12 @@ export async function main(): Promise<void> {
     agents: new CgroupAgentRunner({
       command: (process.env.AGENT_COMMAND ?? '').split(' ').filter((part) => part.length > 0),
       ...(process.env.AGENT_SLICE === undefined ? {} : { slice: process.env.AGENT_SLICE }),
+      // Same number `provision.ts` derives MAX_CONCURRENT_SUBAGENTS from
+      // (`deps.config.agentMemoryMaxBytes`), so the actual cgroup ceiling and
+      // the value the SDK is told about can never disagree (ticket 15).
+      ...(config.agentMemoryMaxBytes === undefined
+        ? {}
+        : { memoryMax: String(config.agentMemoryMaxBytes) }),
     }),
     git: new CliGitClient(),
     orchestrator,

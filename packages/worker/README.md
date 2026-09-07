@@ -34,17 +34,23 @@ missing one throws at startup rather than failing a task later.
 | `GITEA_BOT_TOKEN`, `GITEA_BRANCH` | — | the only branch this agent may push |
 | `MODEL_API_KEY` | — | |
 | `AGENT_SOCKET`, `DISPATCH_SOCKET`, `WORKDIR` | — | the two sockets and the checkout |
+| `HOME` | — | not read by `loadConfig()` — the OS-level `HOME` the `claude` subprocess itself picks up. Ticket 15: the supervisor points it inside the plan's `runDir`, isolated per plan |
+| `CLAUDE_CONFIG_DIR` | sibling of `WORKDIR` named `claude-config` | the Agent SDK's own state (sessions, auto-memory, connector config). Ticket 15: the supervisor injects a real one nested in `runDir`; the fallback here only matters for local dev or a test with no supervisor |
 | `MODEL_ID` | `claude-opus-5` | |
 | `MODEL_EFFORT` | `high` | `low` … `max` |
-| `MODEL_MAX_TOKENS` | `64000` | reserved in full before every call |
-| `BYTES_PER_TOKEN` | `3` | the estimator's divisor; deliberately pessimistic |
-| `MAX_CONCURRENT_AGENTS` | `2` | read and reported, unused until sub-agents exist |
+| `MODEL_MAX_TOKENS` | `64000` | dead: nothing outside `config.ts` reads it any more now that the budget is cost-denominated (D30), pending ticket 14's cleanup |
+| `BYTES_PER_TOKEN` | `3` | dead for the same reason, pending the same cleanup |
+| `MAX_CONCURRENT_SUBAGENTS` | `2` | passed straight to `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Ticket 15: the supervisor derives this from its own memory ceiling (`deriveMaxConcurrentSubagents`) and injects it — `MAX_CONCURRENT_AGENTS` no longer exists. The default here only matters with no supervisor (local dev, a test) |
 | `FILE_READ_MAX_BYTES` / `FILE_WRITE_MAX_BYTES` | `256 KiB` / `1 MiB` | |
 | `LIST_FILES_MAX_ENTRIES` | `500` | |
 | `COMMIT_CADENCE_WARN_AFTER` | `25` | tool calls before one warn-only event |
 | `BROKER_TIMEOUT_MS` / `ORCHESTRATOR_TIMEOUT_MS` | `10000` | |
 | `STATUS_RETRY_LIMIT` / `STATUS_RETRY_WINDOW_MS` | `3` / `30000` | |
 | `SHUTDOWN_GRACE_MS` / `SHUTDOWN_STATUS_TIMEOUT_MS` | `4000` / `2000` | both under B15's five seconds |
+
+`MODEL_MAX_TOKENS` and `BYTES_PER_TOKEN` are listed because `config.ts` still declares them as of
+this write-up (ticket 15) — they are dead code left for ticket 14 (running concurrently) to remove.
+If it has by the time you read this and they are gone from `config.ts`, drop these two rows too.
 
 ## Tools
 

@@ -110,6 +110,33 @@ describe('loadConfig - capacity and limits', () => {
   });
 });
 
+// Ticket 15: the one number both the real per-scope MemoryMax
+// (`drivers/cgroup.ts`) and MAX_CONCURRENT_SUBAGENTS (`environments/provision.ts`
+// -> `deriveMaxConcurrentSubagents`) are read from, so they cannot disagree.
+describe('loadConfig - the agent memory ceiling', () => {
+  it('is undefined when unset, which both readers treat as unbounded', () => {
+    expect(loadConfig(env()).agentMemoryMaxBytes).toBeUndefined();
+  });
+
+  it('reads a configured byte ceiling', () => {
+    expect(loadConfig(env({ AGENT_MEMORY_MAX_BYTES: '2147483648' })).agentMemoryMaxBytes).toBe(
+      2147483648,
+    );
+  });
+
+  it('rejects a non-numeric value rather than silently defaulting to unbounded', () => {
+    expect(() => loadConfig(env({ AGENT_MEMORY_MAX_BYTES: 'lots' }))).toThrow(
+      /AGENT_MEMORY_MAX_BYTES/,
+    );
+  });
+
+  it('rejects a value below the minimum of one byte', () => {
+    expect(() => loadConfig(env({ AGENT_MEMORY_MAX_BYTES: '0' }))).toThrow(
+      /AGENT_MEMORY_MAX_BYTES/,
+    );
+  });
+});
+
 describe('loadConfig - egress and images', () => {
   it('ships a standing egress set so package installs work without a plan saying so', () => {
     const config = loadConfig(env());
