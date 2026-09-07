@@ -85,7 +85,72 @@ describe('claiming and dispatching', () => {
     expect(request?.execution_attempt).toBe(0);
     expect(request?.description).toBe('Do the one thing.');
     expect(request?.limits).toEqual({ cost_microusd: 1000, wall_clock_min: 10 });
-    expect(request?.tokens_spent_so_far).toBe(0);
+    expect(request?.cost_spent_so_far_microusd).toBe(0);
+  });
+
+  /**
+   * The wire this payload crosses is hand-validated on the far side by
+   * `parseDispatch` in `packages/worker/src/dispatch.ts`, which rejects the
+   * whole dispatch — `invalid_params`, not a soft refusal — if any field is
+   * missing or of the wrong runtime type. The supervisor forwards the
+   * envelope verbatim and never inspects it, so nothing between here and
+   * there can correct a mismatch, and the orchestrator's own types cannot
+   * catch one: the two `TaskDispatch` interfaces are hand-kept copies in
+   * separate packages that do not depend on each other.
+   *
+   * This asserts the exact key set and the exact runtime types that
+   * `parseDispatch` demands. It is the only thing in this repo that holds the
+   * two halves of that wire together.
+   */
+  it('matches every field the worker-s parseDispatch requires, by name and runtime type', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const request = h.supervisors.taskDispatches[0]?.request as unknown as Record<string, unknown>;
+    expect(request).toBeDefined();
+
+    for (const field of [
+      'plan_id',
+      'task_id',
+      'local_id',
+      'dispatch_id',
+      'description',
+    ]) {
+      expect(typeof request[field], field).toBe('string');
+    }
+
+    for (const field of ['execution_attempt', 'cost_spent_so_far_microusd']) {
+      expect(typeof request[field], field).toBe('number');
+    }
+
+    const limits = request.limits as Record<string, unknown>;
+    expect(typeof limits.cost_microusd).toBe('number');
+    expect(typeof limits.wall_clock_min).toBe('number');
+
+    expect(running.planId).toBe(request.plan_id);
+  });
+
+  it('sends the prior cost spend as a number, not the string pg returns for a bigint', async () => {
+    const running = await runningPlan(h, singleTaskPlan());
+    const taskId = running.taskIds['only'] as string;
+
+    // `tasks.cost_spent_microusd` is bigint, and `pg` hands bigints back as
+    // strings even for a single unaggregated row. `claimNextTask` selects it
+    // through `TASK_COLUMNS` and types the result as `TaskRow`, whose field
+    // is declared `number` — so without an explicit parse the type is a lie
+    // and the worker rejects the dispatch on `typeof !== 'number'`.
+    await h.deps.pool.query('UPDATE tasks SET cost_spent_microusd = $2 WHERE id = $1', [
+      taskId,
+      4321,
+    ]);
+    await h.deps.pool.query(
+      "UPDATE tasks SET state = 'ready', dispatch_id = NULL WHERE id = $1",
+      [taskId],
+    );
+    h.supervisors.taskDispatches.length = 0;
+    await tick(h.deps);
+
+    const request = h.supervisors.taskDispatches[0]?.request;
+    expect(request?.cost_spent_so_far_microusd).toBe(4321);
+    expect(typeof request?.cost_spent_so_far_microusd).toBe('number');
   });
 
   it('writes a task.dispatched event', async () => {
@@ -299,7 +364,7 @@ describe('failure policy', () => {
     expect(row?.execution_attempt).toBe(2);
   });
 
-  it('carries the prior token spend into the retry dispatch', async () => {
+  it('carries the prior cost spend into the retry dispatch', async () => {
     const running = await runningPlan(
       h,
       singleTaskPlan({
@@ -316,12 +381,20 @@ describe('failure policy', () => {
     const taskId = running.taskIds['only'] as string;
 
     await report(running, taskId, { state: 'running' });
-    await report(running, taskId, { state: 'failed', error: 'one', tokens_spent: 40 });
+    await report(running, taskId, {
+      state: 'failed',
+      error: 'one',
+      cost_spent_microusd: 40,
+      tokens_spent: 900,
+    });
     await tick(h.deps);
 
     const second = h.supervisors.taskDispatches[1]?.request;
     expect(second?.execution_attempt).toBe(1);
-    expect(second?.tokens_spent_so_far).toBe(40);
+    // Cost, because `limits.cost_microusd` is the ceiling this is deducted
+    // from and it is task-wide across attempts (D30). The token figure the
+    // same report carried is detail and deliberately does not travel.
+    expect(second?.cost_spent_so_far_microusd).toBe(40);
   });
 
   it('halts the plan and cancels the siblings when the policy is halt', async () => {

@@ -108,7 +108,7 @@ describe('HttpSupervisorClient task and teardown', () => {
     execution_attempt: 0,
     description: 'do it',
     limits: { cost_microusd: 10, wall_clock_min: 5 },
-    tokens_spent_so_far: 0,
+    cost_spent_so_far_microusd: 0,
   };
 
   it('posts a task to the plan task route', async () => {

@@ -459,8 +459,15 @@ async function claimNextTask(deps: Deps, plan: PlanRow, max: number): Promise<Ta
       [plan.id, dispatchId, lease, now],
     );
 
-    const task = rows[0];
-    if (!task) return null;
+    const claimed = rows[0];
+    if (!claimed) return null;
+
+    // `cost_spent_microusd` is bigint, and `pg` returns bigints as strings
+    // even for a single unaggregated row — `listTasks` parses it for exactly
+    // this reason. `client.query<TaskRow>` above only asserts the type, it
+    // does not convert, so without this the field is a string wearing a
+    // `number` annotation and the worker rejects the dispatch it lands in.
+    const task: TaskRow = { ...claimed, cost_spent_microusd: Number(claimed.cost_spent_microusd) };
 
     await recordTaskStateChange(client, deps, {
       planId: plan.id,
@@ -494,7 +501,7 @@ async function sendTask(
     execution_attempt: task.execution_attempt,
     description: task.spec.description,
     limits: task.spec.limits,
-    tokens_spent_so_far: task.tokens_spent,
+    cost_spent_so_far_microusd: task.cost_spent_microusd,
   };
 
   try {

@@ -34,8 +34,18 @@ export interface TaskDispatch {
   execution_attempt: number;
   description: string;
   limits: { cost_microusd: number; wall_clock_min: number };
-  /** Detail figure; cost_spent_microusd is authoritative (D30). */
-  tokens_spent_so_far: number;
+  /**
+   * What earlier execution attempts already spent, so a retry does not
+   * re-grant the whole ceiling — `limits.cost_microusd` is task-wide across
+   * attempts, not per-attempt.
+   *
+   * Cost, not tokens, and the name matters: `packages/worker/src/protocol.ts`
+   * declares the far side of this wire and `dispatch.ts`'s `parseDispatch`
+   * hand-validates every field on arrival, rejecting the whole dispatch if
+   * one is missing. The supervisor forwards the envelope verbatim, so these
+   * two hand-kept copies in two packages are the entire contract.
+   */
+  cost_spent_so_far_microusd: number;
 }
 
 export type PlanDispatchResult =
