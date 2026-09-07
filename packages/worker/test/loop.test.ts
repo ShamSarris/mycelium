@@ -44,7 +44,11 @@ function completes(id = 'tu-done'): ContentBlock {
 }
 
 async function run(signal = new AbortController().signal) {
-  return runTask(h.deps, taskDispatch(), tools, signal);
+  // `runTask` now takes `Deps` plus the transport `HostLoopRunner` would
+  // otherwise supply (ticket 09) — the direct call here reassembles that by
+  // hand instead of going through the seam, so these tests keep driving the
+  // loop itself rather than the runner wrapping it.
+  return runTask({ ...h.deps, transport: h.transport }, taskDispatch(), tools, signal);
 }
 
 describe('a task that completes', () => {
@@ -62,7 +66,7 @@ describe('a task that completes', () => {
     h.transport.push(turn([completes()], { usage: usage({ inputTokens: 300, outputTokens: 200 }) }));
 
     const outcome = await runTask(
-      h.deps,
+      { ...h.deps, transport: h.transport },
       taskDispatch({ cost_spent_so_far_microusd: 1000, execution_attempt: 2 }),
       tools,
       new AbortController().signal,
@@ -265,7 +269,7 @@ describe('events', () => {
     tools.results.set('sandbox', { kind: 'result', content: 'ok', isError: false });
 
     await runTask(
-      h.deps,
+      { ...h.deps, transport: h.transport },
       taskDispatch({ cost_spent_so_far_microusd: 1000 }),
       tools,
       new AbortController().signal,

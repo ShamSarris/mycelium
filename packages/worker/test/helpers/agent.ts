@@ -4,6 +4,7 @@ import path from 'node:path';
 import { loadConfig, type WorkerConfig } from '../../src/config.js';
 import type { Deps } from '../../src/deps.js';
 import type { TaskDispatch } from '../../src/protocol.js';
+import { HostLoopRunner } from '../../src/runner/host-loop.js';
 import {
   FakeBroker,
   FakeGitClient,
@@ -69,12 +70,13 @@ export async function buildTestWorker(
   const orchestrator = new FakeOrchestratorClient(clock);
   const git = new FakeGitClient(BRANCH);
 
-  const deps: Deps = {
+  // `deps.runner` needs the rest of `deps` (see `index.ts` for why), so it is
+  // assembled the same two-step way here.
+  const deps = {
     config,
     clock,
     broker,
     orchestrator,
-    transport,
     git,
     // Time passes on the injected clock, never in real seconds, so a retry
     // window or a wall-clock limit costs a test nothing to reach.
@@ -82,7 +84,9 @@ export async function buildTestWorker(
       sleeps.push(ms);
       clock.advance(ms);
     },
-  };
+  } as unknown as Deps;
+
+  deps.runner = new HostLoopRunner(deps, transport);
 
   return {
     deps,

@@ -1,10 +1,24 @@
 import type { Deps } from '../deps.js';
 import { cumulative, estimateTokens, openBudget, record, reserve, type Budget } from '../domain/budget.js';
 import type { TaskDispatch } from '../protocol.js';
+import type { TaskOutcome } from '../runner/runner.js';
 import type { ToolOutcome, ToolRegistry } from '../tools/registry.js';
-import type { ContentBlock, ModelRequest, ModelResponse } from '../transport/transport.js';
+import type { ContentBlock, ModelRequest, ModelResponse, ModelTransport } from '../transport/transport.js';
 import { NUDGE, openingMessage, systemPrompt } from './prompt.js';
 import { Conversation } from './state.js';
+
+// `TaskOutcome`'s canonical home is `runner/runner.ts` (ticket 09) — it is
+// the return type of the `TaskRunner` seam now, not just this loop's. Kept
+// re-exported here so nothing importing it from its old home breaks.
+export type { TaskOutcome } from '../runner/runner.js';
+
+/**
+ * `Deps` plus the `ModelTransport` this loop calls directly. `HostLoopRunner`
+ * holds the transport and assembles this from it and the `Deps` it was given,
+ * so nothing above `HostLoopRunner` needs to know this loop still speaks to a
+ * transport at all — that seam is `runner/runner.ts` now.
+ */
+export type HostLoopDeps = Deps & { transport: ModelTransport };
 
 /**
  * The host-owned agent loop.
@@ -20,24 +34,8 @@ import { Conversation } from './state.js';
  * ceiling the orchestrator thought it still had.
  */
 
-export interface TaskOutcome {
-  state: 'done' | 'failed';
-  /**
-   * Task-wide across execution attempts, which is what the status route
-   * expects. Authoritative (ticket 03), but currently just mirrors
-   * `tokensSpent`: `domain/budget.ts` is not converted to cost (ticket 07
-   * decision — it is deleted by ticket 14), so there is no real cost figure
-   * to report yet. Real cost tracking arrives with tickets 09-11.
-   */
-  costMicrousd: number;
-  /** Task-wide across execution attempts, kept as a detail alongside cost. */
-  tokensSpent: number;
-  result?: unknown;
-  error?: string;
-}
-
 export async function runTask(
-  deps: Deps,
+  deps: HostLoopDeps,
   dispatch: TaskDispatch,
   tools: ToolRegistry,
   signal: AbortSignal,

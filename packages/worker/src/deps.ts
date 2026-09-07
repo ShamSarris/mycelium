@@ -2,8 +2,8 @@ import type { Clock } from './clock.js';
 import type { WorkerConfig } from './config.js';
 import type { BrokerClient } from './broker.js';
 import type { OrchestratorClient } from './orchestrator.js';
+import type { TaskRunner } from './runner/runner.js';
 import type { GitClient } from './tools/git.js';
-import type { ModelTransport } from './transport/transport.js';
 
 /**
  * Everything the agent needs, passed explicitly — no singletons and no module
@@ -15,8 +15,14 @@ export interface Deps {
   clock: Clock;
   broker: BrokerClient;
   orchestrator: OrchestratorClient;
-  /** The only seam a provider SDK is allowed behind. */
-  transport: ModelTransport;
+  /**
+   * The seam an agent framework sits behind: whatever turns a dispatch into a
+   * `TaskOutcome`, whether that is the host-owned loop or something that owns
+   * its own turn loop internally. `ModelTransport` (`transport/transport.ts`)
+   * still exists underneath `HostLoopRunner`, but it is no longer part of
+   * `Deps` — nothing above this seam needs to know it is there.
+   */
+  runner: TaskRunner;
   git: GitClient;
   /** Injected so retry backoff and the wall-clock limit run on the test clock. */
   sleep: (ms: number) => Promise<void>;

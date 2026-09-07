@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
+import { HostLoopRunner } from '../src/runner/host-loop.js';
 import { buildTestWorker, taskDispatch, type TestWorker } from './helpers/agent.js';
 
 /**
@@ -25,7 +26,9 @@ describe('buildTestWorker', () => {
   it('wires the four fakes into deps', async () => {
     h = await buildTestWorker();
 
-    expect(h.deps.transport).toBe(h.transport);
+    // The transport is no longer a `Deps` field (ticket 09) — it is wrapped
+    // inside `deps.runner`, which is what this checks instead.
+    expect(h.deps.runner).toBeInstanceOf(HostLoopRunner);
     expect(h.deps.broker).toBe(h.broker);
     expect(h.deps.orchestrator).toBe(h.orchestrator);
     expect(h.deps.git).toBe(h.git);

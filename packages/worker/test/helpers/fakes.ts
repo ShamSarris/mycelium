@@ -11,6 +11,8 @@ import {
   type OrchestratorClient,
   type StatusReport,
 } from '../../src/orchestrator.js';
+import type { TaskDispatch } from '../../src/protocol.js';
+import type { TaskOutcome, TaskRunner } from '../../src/runner/runner.js';
 import { BranchNotAllowed, type GitClient, type GitStatus } from '../../src/tools/git.js';
 import type { ToolCall, ToolOutcome, ToolRegistry } from '../../src/tools/registry.js';
 import {
@@ -94,6 +96,46 @@ function abortError(): Error {
   const error = new Error('aborted');
   error.name = 'AbortError';
   return error;
+}
+
+/**
+ * A scripted `TaskRunner`. Constructed with the outcomes it should return, in
+ * order; `test/runner.test.ts` drives one of these to prove `task.ts` calls
+ * `deps.runner.run` with the dispatch and the signal, without needing a real
+ * loop or a transport behind it. Modelled on `FakeTransport`.
+ */
+export class FakeTaskRunner implements TaskRunner {
+  readonly calls: Array<{ dispatch: TaskDispatch; signal: AbortSignal }> = [];
+  private readonly outcomes: TaskOutcome[];
+  private index = 0;
+
+  constructor(outcomes: TaskOutcome[] = []) {
+    this.outcomes = [...outcomes];
+  }
+
+  push(outcome: TaskOutcome): void {
+    this.outcomes.push(outcome);
+  }
+
+  get callCount(): number {
+    return this.calls.length;
+  }
+
+  async run(dispatch: TaskDispatch, signal: AbortSignal): Promise<TaskOutcome> {
+    this.calls.push({ dispatch: structuredClone(dispatch), signal });
+
+    // Honours the abort signal the same way `FakeTransport` does: a caller
+    // that aborted before the runner produced anything gets an abort, not a
+    // scripted outcome it never asked for.
+    if (signal.aborted) throw abortError();
+
+    const outcome = this.outcomes[this.index];
+    this.index += 1;
+    if (outcome === undefined) {
+      throw new Error(`FakeTaskRunner ran out of outcomes after ${this.index} calls`);
+    }
+    return outcome;
+  }
 }
 
 export function usage(overrides: Partial<NormalizedUsage> = {}): NormalizedUsage {

@@ -1,8 +1,6 @@
 import type { Deps } from './deps.js';
-import { runTask } from './loop/run.js';
 import type { TaskDispatch } from './protocol.js';
 import { reportStatus } from './reporting.js';
-import { buildRegistry } from './tools/registry.js';
 
 /**
  * One dispatched task, end to end: acknowledge, run, report.
@@ -21,11 +19,7 @@ export async function runDispatchedTask(
 ): Promise<void> {
   await reportStatus(deps, dispatch.task_id, { state: 'running' });
 
-  // Per task, so the commit-cadence counter inside it starts fresh and cannot
-  // leak from one task into the next.
-  const tools = buildRegistry(deps);
-
-  const outcome = await runTask(deps, dispatch, tools, signal);
+  const outcome = await deps.runner.run(dispatch, signal);
 
   await reportStatus(
     deps,
