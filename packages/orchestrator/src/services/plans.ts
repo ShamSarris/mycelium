@@ -44,6 +44,8 @@ export interface TaskRow {
   started_at: Date | null;
   finished_at: Date | null;
   tokens_spent: number;
+  /** bigint in Postgres; parsed from the string `pg` returns in `listTasks`. */
+  cost_spent_microusd: number;
   result: unknown;
   error: string | null;
   updated_at: Date;
@@ -56,7 +58,7 @@ export const PLAN_COLUMNS = `id, project_id, state, env, spec, proposed_at, prop
 
 export const TASK_COLUMNS = `id, plan_id, local_id, state, spec, execution_attempt,
   dispatch_attempt, dispatch_id, lease_expires_at, started_at, finished_at, tokens_spent,
-  result, error, updated_at`;
+  cost_spent_microusd, result, error, updated_at`;
 
 export function planBranch(planId: string): string {
   return `plan/${planId}`;
@@ -548,7 +550,7 @@ export async function listPlans(
 export interface TaskRollup {
   /** Task counts by state, for the plan tables. */
   states: Record<string, number>;
-  tokens: number;
+  costMicrousd: number;
 }
 
 /**
@@ -565,14 +567,17 @@ export async function taskRollup(
   const result = new Map<string, TaskRollup>();
   if (planIds.length === 0) return result;
 
+  // `::bigint`, not `::int`: microusd overflows int4 at $2,147.48. `pg`
+  // returns a bigint aggregate as a string, so it is parsed explicitly below
+  // rather than trusted to coerce.
   const { rows } = await deps.pool.query<{
     plan_id: string;
     state: string;
     n: number;
-    tokens: number;
+    cost_microusd: string;
   }>(
     `SELECT plan_id, state::text AS state, count(*)::int AS n,
-            coalesce(sum(tokens_spent), 0)::int AS tokens
+            coalesce(sum(cost_spent_microusd), 0)::bigint AS cost_microusd
        FROM tasks
       WHERE plan_id = ANY($1)
       GROUP BY plan_id, state`,
@@ -580,9 +585,9 @@ export async function taskRollup(
   );
 
   for (const row of rows) {
-    const entry = result.get(row.plan_id) ?? { states: {}, tokens: 0 };
+    const entry = result.get(row.plan_id) ?? { states: {}, costMicrousd: 0 };
     entry.states[row.state] = row.n;
-    entry.tokens += row.tokens;
+    entry.costMicrousd += Number(row.cost_microusd);
     result.set(row.plan_id, entry);
   }
 
@@ -590,9 +595,10 @@ export async function taskRollup(
 }
 
 export async function listTasks(deps: Deps, planId: string): Promise<TaskRow[]> {
-  const { rows } = await deps.pool.query<TaskRow>(
-    `SELECT ${TASK_COLUMNS} FROM tasks WHERE plan_id = $1 ORDER BY local_id`,
-    [planId],
-  );
-  return rows;
+  // `cost_spent_microusd` is bigint; `pg` returns it as a string even for a
+  // single, unaggregated row, so it is parsed explicitly on the way out.
+  const { rows } = await deps.pool.query<Omit<TaskRow, 'cost_spent_microusd'> & {
+    cost_spent_microusd: string;
+  }>(`SELECT ${TASK_COLUMNS} FROM tasks WHERE plan_id = $1 ORDER BY local_id`, [planId]);
+  return rows.map((row) => ({ ...row, cost_spent_microusd: Number(row.cost_spent_microusd) }));
 }

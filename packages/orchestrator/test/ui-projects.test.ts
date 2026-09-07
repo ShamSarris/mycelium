@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestApp, operatorHeaders, type TestHarness } from './helpers/app.js';
-import { propose, runningPlan, validPlan } from './helpers/fixtures.js';
+import { propose, runningPlan } from './helpers/fixtures.js';
+import { costPlan } from './helpers/cost-fixtures.js';
 
 /**
  * The Projects page: what exists, what each one has cost, and a way in.
@@ -42,7 +43,7 @@ async function live(url: string): Promise<Envelope> {
 }
 
 function planIn(project: string) {
-  return { ...validPlan(), project: { name: project } };
+  return { ...costPlan(), project: { name: project } };
 }
 
 /** The table row a project is on, so a count is asserted against the right project. */
@@ -54,7 +55,7 @@ function rowFor(body: string, name: string): string {
 
 describe('access', () => {
   it('is behind the same operator check as everything else under /ui', async () => {
-    const { project_id } = await propose(h, validPlan());
+    const { project_id } = await propose(h, costPlan());
 
     for (const url of ['/ui/projects', `/ui/projects/${project_id}`, '/ui/live/projects']) {
       expect((await h.app.inject({ method: 'GET', url })).statusCode, url).toBe(401);
@@ -87,14 +88,16 @@ describe('the project list', () => {
 
   it('counts the plans and sums what they have spent', async () => {
     const { plan_id, project_id } = await propose(h, planIn('alpha'));
-    await h.pool.query('UPDATE tasks SET tokens_spent = 1500 WHERE plan_id = $1', [plan_id]);
+    await h.pool.query('UPDATE tasks SET cost_spent_microusd = 1_500_000 WHERE plan_id = $1', [
+      plan_id,
+    ]);
 
     const { body } = await page('/ui/projects');
     const row = rowFor(body, 'alpha');
 
-    // Two tasks at 1500 each: the sum is over tasks, because no plan row
+    // Two tasks at $1.50 each: the sum is over tasks, because no plan row
     // carries a spend column and inventing one here would be a second source.
-    expect(row).toContain('3000');
+    expect(row).toContain('$3');
     expect(row).toContain(`/ui/projects/${project_id}`);
   });
 
@@ -152,7 +155,9 @@ describe('one project', () => {
    */
   it('renders its plans through the overview’s table, so the two cannot drift', async () => {
     const { plan_id, project_id } = await propose(h, planIn('alpha'));
-    await h.pool.query('UPDATE tasks SET tokens_spent = 700 WHERE plan_id = $1', [plan_id]);
+    await h.pool.query('UPDATE tasks SET cost_spent_microusd = 700_000 WHERE plan_id = $1', [
+      plan_id,
+    ]);
 
     const overview = await live('/ui/live/overview');
     const project = await live(`/ui/live/projects/${project_id}`);
@@ -218,7 +223,7 @@ describe('the fragments that refresh it', () => {
 
 describe('what these pages must never carry', () => {
   it('renders no token, hash or bot credential', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
     const { rows } = await h.pool.query<{ project_id: string }>(
       'SELECT project_id FROM plans WHERE id = $1',
       [running.planId],

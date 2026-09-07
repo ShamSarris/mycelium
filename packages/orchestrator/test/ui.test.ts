@@ -3,7 +3,8 @@ import { withTransaction } from '../src/db/pool.js';
 import { recordEvent } from '../src/services/events.js';
 import { tick } from '../src/services/dispatcher.js';
 import { buildTestApp, bearer, operatorHeaders, type TestHarness } from './helpers/app.js';
-import { approve, propose, registerSupervisor, runningPlan, validPlan } from './helpers/fixtures.js';
+import { approve, propose, registerSupervisor, runningPlan } from './helpers/fixtures.js';
+import { costPlan } from './helpers/cost-fixtures.js';
 
 /**
  * The dashboard, rendered server-side and asserted through the same
@@ -63,12 +64,12 @@ describe('access', () => {
 
 describe('the overview', () => {
   it('puts a proposed plan under needs attention', async () => {
-    await propose(h, validPlan());
+    await propose(h, costPlan());
 
     const body = (await page('/ui')).body;
 
     expect(body).toContain('Needs attention');
-    expect(body).toContain(validPlan().goal as string);
+    expect(body).toContain(costPlan().goal as string);
   });
 
   it('says so plainly when nothing needs attention', async () => {
@@ -80,7 +81,7 @@ describe('the overview', () => {
   });
 
   it('lists plans with their state and spend against the ceiling', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
 
     const body = (await page('/ui')).body;
 
@@ -91,7 +92,7 @@ describe('the overview', () => {
   it('says why a plan is not running, rather than leaving it ambiguous', async () => {
     // A plan queued with attempts behind it is a different problem from one
     // nobody has approved, and today they look identical.
-    const { plan_id } = await propose(h, validPlan());
+    const { plan_id } = await propose(h, costPlan());
     await approve(h, plan_id);
     await h.pool.query(
       `UPDATE plans SET provision_attempts = 3, next_provision_at = $2 WHERE id = $1`,
@@ -123,7 +124,7 @@ describe('the overview', () => {
   });
 
   it('lists unacknowledged alerts', async () => {
-    const { plan_id } = await propose(h, validPlan());
+    const { plan_id } = await propose(h, costPlan());
     await withTransaction(h.pool, (client) =>
       recordEvent(client, h.deps, {
         type: 'error',
@@ -148,39 +149,39 @@ describe('the overview', () => {
 describe('a plan', () => {
   it('shows everything the approval gate covers', async () => {
     const { plan_id } = await propose(h, {
-      ...validPlan(),
+      ...costPlan(),
       non_goals: ['Do not touch the deploy pipeline.'],
       egress: ['pypi.org'],
-      max_tokens: 90_000,
+      max_cost_microusd: 4_200_000, // $4.20
     });
 
     const body = (await page(`/ui/plans/${plan_id}`)).body;
 
-    expect(body).toContain((validPlan().assumptions as string[])[0] as string);
+    expect(body).toContain((costPlan().assumptions as string[])[0] as string);
     expect(body).toContain('Do not touch the deploy pipeline.');
     expect(body).toContain('pypi.org');
-    expect(body).toContain('90000');
+    expect(body).toContain('$4.20');
     expect(body).toMatch(/240|TTL/i);
   });
 
   it('lists the tasks with their state', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
 
     const body = (await page(`/ui/plans/${running.planId}`)).body;
 
-    for (const task of validPlan().tasks as Array<{ id: string }>) {
+    for (const task of costPlan().tasks as Array<{ id: string }>) {
       expect(body).toContain(task.id);
     }
   });
 
   it('shows the plan is recent events', async () => {
-    const { plan_id } = await propose(h, validPlan());
+    const { plan_id } = await propose(h, costPlan());
 
     expect((await page(`/ui/plans/${plan_id}`)).body).toContain('plan.state_changed');
   });
 
   it('offers approve and reject on a proposed plan', async () => {
-    const { plan_id } = await propose(h, validPlan());
+    const { plan_id } = await propose(h, costPlan());
 
     const body = (await page(`/ui/plans/${plan_id}`)).body;
 
@@ -189,7 +190,7 @@ describe('a plan', () => {
   });
 
   it('offers cancel on a running plan, and not approve', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
 
     const body = (await page(`/ui/plans/${running.planId}`)).body;
 
@@ -206,7 +207,7 @@ describe('a plan', () => {
 
 describe('what the pages must never contain', () => {
   it('renders no token, hash, or credential anywhere', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
     await tick(h.deps);
 
     const bodies = [(await page('/ui')).body, (await page(`/ui/plans/${running.planId}`)).body];
@@ -223,7 +224,7 @@ describe('what the pages must never contain', () => {
 
   it('escapes what came from a plan, so a goal cannot inject markup', async () => {
     const { plan_id } = await propose(h, {
-      ...validPlan(),
+      ...costPlan(),
       goal: 'Add <script>alert(1)</script> to the page.',
     });
 

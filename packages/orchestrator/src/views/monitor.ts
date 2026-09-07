@@ -9,14 +9,15 @@ import type {
 } from '../services/monitor.js';
 import { WINDOW_DAYS } from '../services/monitor.js';
 import { bar } from './components.js';
+import { formatCost } from './format.js';
 import { html, raw, type PageParts } from './html.js';
 
 /**
- * The Monitor page: what has run, what failed, and where the tokens went.
+ * The Monitor page: what has run, what failed, and where the cost went.
  *
  * Every section says what its window is *over*. "Spend last week" is not a
  * fact until you know it is keyed on when a task finished — nothing in the
- * schema timestamps token spend, so that is the nearest honest key and the
+ * schema timestamps cost spend, so that is the nearest honest key and the
  * page says so rather than letting the operator assume otherwise.
  *
  * There is deliberately no event-type histogram beyond warn and error:
@@ -86,14 +87,14 @@ function throughput(plans: StateCount[], tasks: TaskOutcome[], days: WindowDays)
 function taskTable(tasks: TaskOutcome[]): string {
   return html`<table>
     <tr>
-      <th>outcome</th><th>tasks</th><th>tokens</th>
+      <th>outcome</th><th>tasks</th><th>cost</th>
       <th>executions</th><th>dispatches</th>
     </tr>
     ${tasks.map(
       (row) => html`<tr>
         <td>${row.state}</td>
         <td>${row.n}</td>
-        <td>${row.tokens}</td>
+        <td>${formatCost(row.costMicrousd)}</td>
         <td>${row.executions}</td>
         <td>${row.dispatches}</td>
       </tr>`,
@@ -107,31 +108,31 @@ function taskTable(tasks: TaskOutcome[]): string {
  * column, and drawing one against an invented ceiling would be a fiction.
  */
 function spend(series: DaySpend[], days: WindowDays): string {
-  const total = series.reduce((sum, day) => sum + day.tokens, 0);
+  const total = series.reduce((sum, day) => sum + day.costMicrousd, 0);
 
   if (series.length === 0) {
     return html`<h2>Spend</h2>
       <div class="card">
-        <div class="meta">tokens, by task finish (UTC), last ${days}d</div>
+        <div class="meta">cost, by task finish (UTC), last ${days}d</div>
         <p class="empty">No tasks finished in this window, so nothing has been attributed.</p>
       </div>`;
   }
 
-  const peak = Math.max(...series.map((day) => day.tokens));
+  const peak = Math.max(...series.map((day) => day.costMicrousd));
 
   return html`<h2>Spend</h2>
     <div class="card">
       <div class="meta">
-        ${total} tokens, by task finish (UTC), last ${days}d
+        ${formatCost(total)}, by task finish (UTC), last ${days}d
       </div>
       ${raw(sparkline(series))}
       <table>
-        <tr><th>day</th><th>tokens</th><th></th></tr>
+        <tr><th>day</th><th>cost</th><th></th></tr>
         ${series.map(
           (day) => html`<tr>
             <td>${day.day}</td>
-            <td>${day.tokens}</td>
-            <td>${raw(bar(peak === 0 ? 0 : (day.tokens / peak) * 100))}</td>
+            <td>${formatCost(day.costMicrousd)}</td>
+            <td>${raw(bar(peak === 0 ? 0 : (day.costMicrousd / peak) * 100))}</td>
           </tr>`,
         )}
       </table>
@@ -146,18 +147,20 @@ function spend(series: DaySpend[], days: WindowDays): string {
 function sparkline(series: DaySpend[]): string {
   if (series.length < 2) return '';
 
-  const peak = Math.max(...series.map((day) => day.tokens));
+  // Relative-to-peak and therefore unit-agnostic: only the labels below
+  // changed when this became a cost figure rather than a token count.
+  const peak = Math.max(...series.map((day) => day.costMicrousd));
   const step = 100 / (series.length - 1);
   const points = series
     .map((day, index) => {
       // Flat rather than divided by zero when every day in the window is zero.
-      const height = peak === 0 ? 0 : (day.tokens / peak) * 20;
+      const height = peak === 0 ? 0 : (day.costMicrousd / peak) * 20;
       return `${(index * step).toFixed(1)},${(22 - height).toFixed(1)}`;
     })
     .join(' ');
 
   return `<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" role="img"
-    aria-label="tokens per day across the window"><polyline points="${points}"
+    aria-label="cost per day across the window"><polyline points="${points}"
     fill="none" stroke="currentColor" stroke-width="1.2"/></svg>`;
 }
 

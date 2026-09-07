@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestApp, operatorHeaders, type TestHarness } from './helpers/app.js';
-import { propose, runningPlan, validPlan } from './helpers/fixtures.js';
+import { propose, runningPlan } from './helpers/fixtures.js';
+import { costPlan } from './helpers/cost-fixtures.js';
 
 /**
  * The Monitor page: what has run, what failed, and where the tokens went.
@@ -53,13 +54,13 @@ function daysAgo(days: number): Date {
   return new Date(h.clock.now().getTime() - days * 86_400_000);
 }
 
-async function finishTasks(planId: string, tokens: number, at: Date): Promise<void> {
+async function finishTasks(planId: string, costMicrousd: number, at: Date): Promise<void> {
   await h.pool.query(
     `UPDATE tasks
-        SET state = 'done', tokens_spent = $2, started_at = $3, finished_at = $4,
+        SET state = 'done', cost_spent_microusd = $2, started_at = $3, finished_at = $4,
             updated_at = $4
       WHERE plan_id = $1`,
-    [planId, tokens, new Date(at.getTime() - 120_000), at],
+    [planId, costMicrousd, new Date(at.getTime() - 120_000), at],
   );
 }
 
@@ -131,8 +132,8 @@ describe('an empty database', () => {
 
 describe('what ran', () => {
   it('counts the plans proposed in the window by state', async () => {
-    await propose(h, validPlan());
-    await propose(h, { ...validPlan(), goal: 'A second plan.' });
+    await propose(h, costPlan());
+    await propose(h, { ...costPlan(), goal: 'A second plan.' });
 
     const rendered = allRegions(await live());
 
@@ -141,31 +142,33 @@ describe('what ran', () => {
   });
 
   it('sums what tasks spent, and keys the sum on when they finished', async () => {
-    const running = await runningPlan(h, validPlan());
-    await finishTasks(running.planId, 1200, daysAgo(1));
+    const running = await runningPlan(h, costPlan());
+    await finishTasks(running.planId, 1_200_000, daysAgo(1));
 
     const rendered = allRegions(await live());
 
-    // Two tasks at 1200. Labelled by its key, because "spend last week" means
-    // nothing until you know which timestamp it is a window over.
-    expect(rendered).toContain('2400');
+    // Two tasks at $1.20 each. Labelled by its key, because "spend last week"
+    // means nothing until you know which timestamp it is a window over.
+    expect(rendered).toContain('$2.40');
     expect(rendered.toLowerCase()).toContain('by task finish');
   });
 
   it('leaves out work that finished before the window', async () => {
-    const running = await runningPlan(h, validPlan());
-    await finishTasks(running.planId, 5000, daysAgo(20));
+    const running = await runningPlan(h, costPlan());
+    // Comfortably past 2^31 microusd (~$2,147.48) once both tasks are summed,
+    // so this also exercises the ::bigint cast rather than only formatCost.
+    await finishTasks(running.planId, 5_000_000_000, daysAgo(20));
 
     const inWeek = allRegions(await live('/ui/live/monitor?days=7'));
     const inMonth = allRegions(await live('/ui/live/monitor?days=30'));
 
-    expect(inWeek).not.toContain('10000');
-    expect(inMonth).toContain('10000');
+    expect(inWeek).not.toContain('$10,000');
+    expect(inMonth).toContain('$10,000');
   });
 
   it('reports how long tasks took, as a median and a tail', async () => {
-    const running = await runningPlan(h, validPlan());
-    await finishTasks(running.planId, 100, daysAgo(1));
+    const running = await runningPlan(h, costPlan());
+    await finishTasks(running.planId, 100_000, daysAgo(1));
 
     const rendered = allRegions(await live());
 
@@ -176,7 +179,7 @@ describe('what ran', () => {
 
 describe('what broke', () => {
   it('names each failed plan with the reason it stopped', async () => {
-    const { plan_id } = await propose(h, validPlan());
+    const { plan_id } = await propose(h, costPlan());
     await h.pool.query(
       `UPDATE plans SET state = 'failed', terminal_reason = 'task_failed:transport_error',
                         updated_at = $2 WHERE id = $1`,
@@ -205,7 +208,7 @@ describe('what broke', () => {
 
 describe('the fragment that refreshes it', () => {
   it('renders each region exactly as the document already has it', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
     await finishTasks(running.planId, 300, daysAgo(1));
 
     const { body } = await page('/ui/monitor');
@@ -218,7 +221,7 @@ describe('the fragment that refreshes it', () => {
   });
 
   it('does not change while nothing does', async () => {
-    await propose(h, validPlan());
+    await propose(h, costPlan());
 
     const first = await live();
     const second = await live();
@@ -231,7 +234,7 @@ describe('the fragment that refreshes it', () => {
 
 describe('what this page must never carry', () => {
   it('renders no token, hash or bot credential', async () => {
-    const running = await runningPlan(h, validPlan());
+    const running = await runningPlan(h, costPlan());
     await finishTasks(running.planId, 300, daysAgo(1));
 
     const bodies = [(await page('/ui/monitor')).body, JSON.stringify(await live())];
@@ -245,7 +248,7 @@ describe('what this page must never carry', () => {
   });
 
   it('escapes a plan goal in a failure row', async () => {
-    const { plan_id } = await propose(h, { ...validPlan(), goal: 'Add <script>alert(1)</script>' });
+    const { plan_id } = await propose(h, { ...costPlan(), goal: 'Add <script>alert(1)</script>' });
     await h.pool.query(
       `UPDATE plans SET state = 'failed', terminal_reason = 'nope', updated_at = $2 WHERE id = $1`,
       [plan_id, daysAgo(1)],

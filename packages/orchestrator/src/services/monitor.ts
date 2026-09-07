@@ -34,7 +34,7 @@ export interface StateCount {
 }
 
 export interface TaskOutcome extends StateCount {
-  tokens: number;
+  costMicrousd: number;
   /** Summed re-executions and re-dispatches, which are two different failures. */
   executions: number;
   dispatches: number;
@@ -43,7 +43,7 @@ export interface TaskOutcome extends StateCount {
 export interface DaySpend {
   /** UTC, so the buckets do not move with the server's timezone. */
   day: string;
-  tokens: number;
+  costMicrousd: number;
 }
 
 export interface FailedPlan {
@@ -93,18 +93,28 @@ export async function monitorSummary(deps: Deps, days: WindowDays): Promise<Moni
 
     // Finished tasks only: an unfinished task has no outcome, and counting it
     // as one would make every long-running plan look like a stall.
-    deps.pool.query<TaskOutcome>(
+    //
+    // `::bigint`, not `::int`, on the cost sum: microusd overflows int4 at
+    // $2,147.48. `pg` returns a bigint aggregate as a string regardless of
+    // the query's generic type parameter, so it is parsed explicitly below.
+    deps.pool.query<{
+      state: string;
+      n: number;
+      cost_microusd: string;
+      executions: number;
+      dispatches: number;
+    }>(
       `SELECT state::text AS state, count(*)::int AS n,
-              coalesce(sum(tokens_spent), 0)::int AS tokens,
+              coalesce(sum(cost_spent_microusd), 0)::bigint AS cost_microusd,
               coalesce(sum(execution_attempt), 0)::int AS executions,
               coalesce(sum(dispatch_attempt), 0)::int AS dispatches
          FROM tasks WHERE finished_at >= $1 GROUP BY state ORDER BY state`,
       [since],
     ),
 
-    deps.pool.query<DaySpend>(
+    deps.pool.query<{ day: string; cost_microusd: string }>(
       `SELECT to_char(date_trunc('day', finished_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
-              coalesce(sum(tokens_spent), 0)::int AS tokens
+              coalesce(sum(cost_spent_microusd), 0)::bigint AS cost_microusd
          FROM tasks WHERE finished_at >= $1 GROUP BY 1 ORDER BY 1`,
       [since],
     ),
@@ -162,8 +172,14 @@ export async function monitorSummary(deps: Deps, days: WindowDays): Promise<Moni
     days,
     since,
     plans: plans.rows,
-    tasks: tasks.rows,
-    spend: spend.rows,
+    tasks: tasks.rows.map((row) => ({
+      state: row.state,
+      n: row.n,
+      costMicrousd: Number(row.cost_microusd),
+      executions: row.executions,
+      dispatches: row.dispatches,
+    })),
+    spend: spend.rows.map((row) => ({ day: row.day, costMicrousd: Number(row.cost_microusd) })),
     failures: failures.rows,
     events: events.rows,
     latency: latency.rows[0] ?? {

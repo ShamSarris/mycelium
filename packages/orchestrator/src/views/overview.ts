@@ -1,7 +1,8 @@
 import type { Plan } from '@mycelium/contracts';
-import { planTokenCeiling } from '../domain/budget.js';
+import { planCostCeiling } from '../domain/budget.js';
 import type { AlertRow } from '../services/alerts.js';
 import { PLAN_LIST_LIMIT } from '../services/plans.js';
+import { formatCost } from './format.js';
 import { html, raw, type PageParts } from './html.js';
 import type { AgentView, PlanView } from './model.js';
 
@@ -18,7 +19,7 @@ import type { AgentView, PlanView } from './model.js';
 interface OverviewInput {
   now: Date;
   proposed: PlanView[];
-  plans: Array<PlanView & { tokensSpent: number; taskCounts: Record<string, number> }>;
+  plans: Array<PlanView & { costMicrousd: number; taskCounts: Record<string, number> }>;
   alerts: AlertRow[];
   workers: Array<AgentView & { planIds: string[] }>;
   healthyWithinMinutes: number;
@@ -108,7 +109,7 @@ export function whyNotRunning(plan: PlanView): string {
 
 /** Exported because the project page shows the same table, and two of them would drift. */
 export function planTable(
-  plans: Array<PlanView & { tokensSpent: number; taskCounts: Record<string, number> }>,
+  plans: Array<PlanView & { costMicrousd: number; taskCounts: Record<string, number> }>,
 ): string {
   if (plans.length === 0) return html`<h2>Plans</h2><p class="empty">No plans yet.</p>`;
 
@@ -122,7 +123,7 @@ export function planTable(
 
   return html`<h2>Plans</h2>
     <table>
-      <tr><th>plan</th><th>state</th><th>tasks</th><th>tokens</th><th>why</th></tr>
+      <tr><th>plan</th><th>state</th><th>tasks</th><th>cost</th><th>why</th></tr>
       ${plans.map((plan) => {
         const spec = plan.spec as Plan;
         const counts = Object.entries(plan.taskCounts)
@@ -135,7 +136,7 @@ export function planTable(
           </td>
           <td>${plan.state}</td>
           <td>${counts}</td>
-          <td>${plan.tokensSpent} / ${planTokenCeiling(spec)}</td>
+          <td>${formatCost(plan.costMicrousd)} / ${formatCost(planCostCeiling(spec))}</td>
           <td class="meta">${whyNotRunning(plan)}</td>
         </tr>`;
       })}

@@ -257,7 +257,7 @@ async function overviewModel(deps: Deps, now: Date) {
     proposed: plans.filter((plan) => plan.state === 'proposed').map(viewPlan),
     plans: plans.map((plan) => ({
       ...viewPlan(plan),
-      tokensSpent: counts.get(plan.id)?.tokens ?? 0,
+      costMicrousd: counts.get(plan.id)?.costMicrousd ?? 0,
       taskCounts: counts.get(plan.id)?.states ?? {},
     })),
     alerts,
@@ -302,7 +302,7 @@ async function projectModel(deps: Deps, projectId: string, now: Date) {
     project,
     plans: plans.map((plan) => ({
       ...viewPlan(plan),
-      tokensSpent: counts.get(plan.id)?.tokens ?? 0,
+      costMicrousd: counts.get(plan.id)?.costMicrousd ?? 0,
       taskCounts: counts.get(plan.id)?.states ?? {},
     })),
   };

@@ -1,6 +1,7 @@
 import type { Plan } from '@mycelium/contracts';
-import { planTokenCeiling } from '../domain/budget.js';
+import { planCostCeiling } from '../domain/budget.js';
 import type { TaskRow } from '../services/plans.js';
+import { formatCost } from './format.js';
 import { html, raw, type PageParts } from './html.js';
 import type { PlanView } from './model.js';
 
@@ -72,13 +73,25 @@ function nonGoals(spec: Plan): string {
 }
 
 function envelope(spec: Plan): string {
-  // Raw integers, deliberately: the ceiling is compared against the plan
-  // document and against the agent's own refusal message, and a thousands
-  // separator would make those three disagree on sight.
+  // This used to read: "Raw integers, deliberately: the ceiling is compared
+  // against the plan document and against the agent's own refusal message,
+  // and a thousands separator would make those three disagree on sight."
+  //
+  // That rationale has inverted rather than gone away — it is why this
+  // comment is rewritten and not deleted. A plan document written in
+  // microusd (`max_cost_microusd`) and a dashboard reading `$4.20` are
+  // *meant* to look different: the document is the unit an agent enforces
+  // against, and this table is what an operator reads, so formatting through
+  // `formatCost` is the correct choice for the same reason raw integers used
+  // to be.
+  //
+  // `max_concurrent_agents` no longer has a row here: ticket 03 removed it
+  // from the plan schema entirely (the SDK enforces subagent concurrency and
+  // the supervisor derives the number from the VM's memory — ticket 13), so
+  // there is no longer an operator-authored value to show.
   return html`<h2>Envelope</h2>
     <table>
-      <tr><th>tokens</th><td>${planTokenCeiling(spec)}</td></tr>
-      <tr><th>concurrency</th><td>${spec.max_concurrent_agents ?? 2}</td></tr>
+      <tr><th>cost ceiling</th><td>${formatCost(planCostCeiling(spec))}</td></tr>
       <tr><th>environment TTL</th><td>${spec.env_ttl_min ?? 240} min</td></tr>
       <tr><th>egress</th><td>${(spec.egress ?? []).join(', ') || 'none beyond the standing set'}</td></tr>
     </table>`;
@@ -105,13 +118,13 @@ function taskTable(tasks: TaskRow[]): string {
 
   return html`<h2>Tasks</h2>
     <table>
-      <tr><th>task</th><th>state</th><th>attempts</th><th>tokens</th><th>error</th></tr>
+      <tr><th>task</th><th>state</th><th>attempts</th><th>cost</th><th>error</th></tr>
       ${tasks.map(
         (task) => html`<tr>
           <td>${task.local_id}</td>
           <td>${task.state}</td>
           <td class="meta">${task.execution_attempt} exec / ${task.dispatch_attempt} dispatch</td>
-          <td>${task.tokens_spent}</td>
+          <td>${formatCost(task.cost_spent_microusd)}</td>
           <td class="meta">${task.error ?? ''}</td>
         </tr>`,
       )}

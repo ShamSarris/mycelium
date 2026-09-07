@@ -1,5 +1,6 @@
 import type { ProjectRow, ProjectSummary } from '../services/projects.js';
 import { ago } from './components.js';
+import { formatCost } from './format.js';
 import { html, type PageParts } from './html.js';
 import type { PlanView } from './model.js';
 import { planTable } from './overview.js';
@@ -12,7 +13,7 @@ import { planTable } from './overview.js';
  * were written and drift on the day a column was added to one of them.
  */
 
-type PlanWithRollup = PlanView & { tokensSpent: number; taskCounts: Record<string, number> };
+type PlanWithRollup = PlanView & { costMicrousd: number; taskCounts: Record<string, number> };
 
 export function projectsPage(input: { now: Date; projects: ProjectSummary[] }): PageParts {
   return {
@@ -50,7 +51,7 @@ function projectTable(projects: ProjectSummary[], now: Date): string {
   return html`<h2>Projects</h2>
     <table>
       <tr>
-        <th>project</th><th>plans</th><th>tokens</th>
+        <th>project</th><th>plans</th><th>cost</th>
         <th>last plan update</th><th>repo</th>
       </tr>
       ${projects.map(
@@ -63,7 +64,7 @@ function projectTable(projects: ProjectSummary[], now: Date): string {
             ${project.plans}
             <div class="meta">${stateCounts(project.states)}</div>
           </td>
-          <td>${project.tokens}</td>
+          <td>${formatCost(project.costMicrousd)}</td>
           <td class="meta">${ago(now, project.lastPlanUpdate, 'no plans yet')}</td>
           <td class="meta">${project.gitea_repo ?? 'not created yet'}</td>
         </tr>`,
@@ -77,7 +78,7 @@ function projectTable(projects: ProjectSummary[], now: Date): string {
  * and when it was created.
  */
 function projectCard(project: ProjectRow, plans: PlanWithRollup[]): string {
-  const spent = plans.reduce((total, plan) => total + plan.tokensSpent, 0);
+  const spent = plans.reduce((total, plan) => total + plan.costMicrousd, 0);
 
   return html`<h2>${project.name}</h2>
     <div class="card">
@@ -88,7 +89,7 @@ function projectCard(project: ProjectRow, plans: PlanWithRollup[]): string {
       <div class="meta">repo: ${project.gitea_repo ?? 'not created yet'}</div>
       <div class="meta">created ${project.created_at.toISOString()}</div>
       <div class="meta">
-        ${plans.length} plans · ${spent} tokens spent
+        ${plans.length} plans · ${formatCost(spent)} spent
       </div>
     </div>`;
 }

@@ -25,7 +25,7 @@ export interface ProjectSummary extends ProjectRow {
   states: Record<string, number>;
   plans: number;
   proposed: number;
-  tokens: number;
+  costMicrousd: number;
   /**
    * `max(plans.updated_at)`. Deliberately not called "last activity": it is a
    * row timestamp, not an event, and a project can be busy without it moving.
@@ -50,19 +50,24 @@ export async function listProjects(deps: Deps): Promise<ProjectSummary[]> {
     ),
     // The spend subquery groups tasks once rather than joining them row-by-row
     // into the plan count, which would multiply every plan by its task count.
+    //
+    // `::bigint`, not `::int`, on both sums: microusd overflows int4 at
+    // $2,147.48. `pg` returns a bigint aggregate as a string, parsed
+    // explicitly below.
     deps.pool.query<{
       project_id: string;
       state: string;
       n: number;
-      tokens: number;
+      cost_microusd: string;
       last_update: Date;
     }>(
       `SELECT p.project_id, p.state::text AS state, count(*)::int AS n,
-              coalesce(sum(t.tokens), 0)::int AS tokens,
+              coalesce(sum(t.cost_microusd), 0)::bigint AS cost_microusd,
               max(p.updated_at) AS last_update
          FROM plans p
          LEFT JOIN (
-           SELECT plan_id, sum(tokens_spent)::int AS tokens FROM tasks GROUP BY plan_id
+           SELECT plan_id, sum(cost_spent_microusd)::bigint AS cost_microusd
+             FROM tasks GROUP BY plan_id
          ) t ON t.plan_id = p.id
         GROUP BY p.project_id, p.state`,
     ),
@@ -75,7 +80,7 @@ export async function listProjects(deps: Deps): Promise<ProjectSummary[]> {
       states: {},
       plans: 0,
       proposed: 0,
-      tokens: 0,
+      costMicrousd: 0,
       lastPlanUpdate: null,
     });
   }
@@ -89,7 +94,7 @@ export async function listProjects(deps: Deps): Promise<ProjectSummary[]> {
 
     summary.states[row.state] = row.n;
     summary.plans += row.n;
-    summary.tokens += row.tokens;
+    summary.costMicrousd += Number(row.cost_microusd);
     if (row.state === 'proposed') summary.proposed = row.n;
     if (
       row.last_update !== null &&
