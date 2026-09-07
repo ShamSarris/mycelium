@@ -16,12 +16,13 @@ import type { CommitBox } from './cadence.js';
  * Ajv compiler. `domain/args.ts` and the JSON-Schema declarations it checked
  * (`tools/registry.ts`, and the `declaration()`/`declarations()` functions
  * `tools/{sandbox,git,complete}.ts` used to export for it) are gone — ticket
- * 14 deleted the host-owned loop that was their only caller.
+ * 14 deleted the host-owned loop that was their only caller, and
+ * `tools/complete.ts` itself has since followed them.
  *
  * `ToolOutcome` is declared below rather than imported: it used to live in
  * `tools/registry.ts` (this file's own ticket-14 replacement, per that
- * ticket's delete table), and `tools/{sandbox,git,complete}.ts`'s executors
- * still return it, so it moved here with them rather than disappearing.
+ * ticket's delete table), and `tools/{sandbox,git}.ts`'s executors still
+ * return it, so it moved here with them rather than disappearing.
  *
  * Three of the old seven tools do not appear here: `read_file`, `write_file`,
  * `list_files` are replaced by the Agent SDK's built-in Read/Write/Edit/Glob/
@@ -66,14 +67,16 @@ export type TerminalOutcome =
   | { kind: 'failed'; errorClass: string; detail: string };
 
 /**
- * What `tools/{sandbox,git,complete}.ts`'s executors return. Moved here from
- * the deleted `tools/registry.ts` (ticket 14) — this file is that module's
- * named replacement. Only the `'result'` arm is ever routed through this
- * module's own `toCallToolResult` (below): `sandboxRun` and `gitRun` never
- * produce the terminal kinds, and `task_complete`/`task_failed` are handled
- * by `TerminalOutcome`/`TerminalOutcomeBox` above instead, not by calling
- * `tools/complete.ts`'s own `complete`/`failed` (which currently have no
- * caller at all — see the ticket 14 completion report).
+ * What `tools/{sandbox,git}.ts`'s executors return. Moved here from the
+ * deleted `tools/registry.ts` (ticket 14) — this file is that module's named
+ * replacement. Only the `'result'` arm is ever routed through this module's
+ * own `toCallToolResult` (below): `sandboxRun` and `gitRun` never produce the
+ * terminal kinds, and `task_complete`/`task_failed` are handled by
+ * `TerminalOutcome`/`TerminalOutcomeBox` above instead.
+ *
+ * The terminal arms survive on this type because `TerminalOutcome` is written
+ * from them; `tools/complete.ts`, which was the only other producer and had no
+ * caller after ticket 10 declared these tools directly with Zod, is deleted.
  */
 export type ToolOutcome =
   | { kind: 'result'; content: string; isError: boolean; committed?: boolean }
@@ -110,10 +113,9 @@ function strictShape<Shape extends z.ZodRawShape>(shape: Shape): Shape {
 
 /** Turns the executors' existing `ToolOutcome` into ordinary MCP tool content. */
 function toCallToolResult(outcome: ToolOutcome): { content: Array<{ type: 'text'; text: string }>; isError: boolean } {
-  /* c8 ignore start -- sandboxRun and gitRun only ever produce 'result'; only complete.ts's
-     removed executors produced the terminal kinds, and this module never routes through this
-     adapter for task_complete/task_failed. Guarded rather than assumed, so a future change to
-     either executor fails loudly instead of silently mis-rendering. */
+  /* c8 ignore start -- sandboxRun and gitRun only ever produce 'result', and this module never
+     routes task_complete/task_failed through this adapter. Guarded rather than assumed, so a
+     future change to either executor fails loudly instead of silently mis-rendering. */
   if (outcome.kind !== 'result') {
     throw new Error(`internal error: unexpected non-result tool outcome (${outcome.kind})`);
   }

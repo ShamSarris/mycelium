@@ -1,0 +1,29 @@
+{
+  "goal": "Verify the real Mycelium VM, Gitea, and model execution path by creating SMOKE.md in an isolated project repository.",
+  "project": { "name": "mycelium-real-smoke-template" },
+  "assumptions": [
+    "The approved dev worker is healthy and can reach the configured Gitea host and model API through its standing egress.",
+    "The Gitea organisation and service credentials are configured as documented in infra/README.md."
+  ],
+  "non_goals": [
+    "Do not change existing projects, repositories, configuration, or infrastructure.",
+    "Do not add dependencies, CI, tooling, or files other than the requested smoke file."
+  ],
+  "env": "dev",
+  "tasks": [
+    {
+      "id": "write-smoke-file",
+      "description": "Create the requested smoke file at the repository root with exactly its requested one-line content. Commit the change on the plan branch, push it, then call task_complete with the commit SHA.",
+      "depends_on": [],
+      "limits": { "cost_microusd": 3000000, "wall_clock_min": 10 },
+      "failure_policy": { "type": "halt" }
+    }
+  ],
+  "success_criteria": [
+    { "type": "all_tasks_done" },
+    { "type": "file_exists_in_branch", "path": "SMOKE.md" }
+  ],
+  "egress": [],
+  "max_cost_microusd": 3000000,
+  "env_ttl_min": 60
+}

@@ -6,6 +6,7 @@ import {
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Deps } from '../deps.js';
+import { attemptBudgetMicrousd } from '../domain/budget.js';
 import type { TaskDispatch } from '../protocol.js';
 import { createCommitBox, initialCadenceState, noteToolResult } from './cadence.js';
 import { createContainmentHook } from './containment.js';
@@ -187,21 +188,28 @@ export class AgentSdkRunner implements TaskRunner {
     clearTimeout(timer);
     signal.removeEventListener('abort', onExternalAbort);
 
-    const bestEffort = (): { costMicrousd: number; tokensSpent: number } => {
+    const bestEffort = (): { tokensSpent: number } => {
       const tokens = cumulativeTokens(mapperState);
-      return { costMicrousd: tokens, tokensSpent: tokens };
+      // Per-turn SDK messages have token usage but no price. Treating those
+      // tokens as micro-USD corrupts the budget ledger.
+      return { tokensSpent: tokens };
     };
 
     if (label === 'timedOut') {
       return {
         state: 'failed',
-        error: `limit_exceeded: the task passed its ${dispatch.limits.wall_clock_min} minute wall clock`,
+        error: `limit_exceeded: the task passed its ${dispatch.limits.wall_clock_min} minute wall clock; cost_unknown: ` +
+          'final SDK usage report was unavailable',
         ...bestEffort(),
       };
     }
 
     if (label === 'aborted') {
-      return { state: 'failed', error: `aborted: ${abortReason(signal)}`, ...bestEffort() };
+      return {
+        state: 'failed',
+        error: `aborted: ${abortReason(signal)}; cost_unknown: final SDK usage report was unavailable`,
+        ...bestEffort(),
+      };
     }
 
     // label === 'completed': `consume` has fully settled, so it is safe to
@@ -226,6 +234,14 @@ export class AgentSdkRunner implements TaskRunner {
     }
 
     const spend = computeSpend(finalResult, dispatch.cost_spent_so_far_microusd, mapperState);
+
+    if (spend.costMicrousd === undefined) {
+      return {
+        state: 'failed',
+        error: 'cost_unknown: final SDK usage report was unavailable; reconciliation is required',
+        tokensSpent: spend.tokensSpent,
+      };
+    }
 
     if (outcomeBox.outcome?.kind === 'complete') {
       const completion = outcomeBox.outcome;
@@ -345,7 +361,13 @@ function rosterAsAgentDefinitions(): Record<string, AgentDefinition> {
   return Object.fromEntries(
     Object.entries(SUBAGENT_ROSTER).map(([name, spec]) => [
       name,
-      { description: spec.description, prompt: spec.prompt, tools: [...spec.tools], effort: spec.effort },
+      {
+        description: spec.description,
+        prompt: spec.prompt,
+        tools: [...spec.tools],
+        effort: spec.effort,
+        maxTurns: spec.maxTurns,
+      },
     ]),
   );
 }
@@ -373,6 +395,8 @@ function buildOptions(
     // subagent roster's own `effort: 'low'` above stays deliberately
     // independent of it.
     effort: config.modelEffort,
+    // Explicit worker-owned bound; V2 role runners replace this with role profiles.
+    maxTurns: config.maxTurns,
     cwd: config.workdir,
     // 01-findings.md Q2, confirmed live: `tools: [...]` restricts the
     // model's own callable set, not a downstream permission check — the
@@ -429,7 +453,14 @@ function buildOptions(
     // Checked after a turn is tallied, so this can overshoot by up to one
     // turn — a known, accepted regression from the old fail-closed pre-call
     // reservation (ticket 11 §3). Do not reinstate a pre-call gate here.
-    maxBudgetUsd: dispatch.limits.cost_microusd / 1_000_000,
+    //
+    // What this budget is NOT is the whole ceiling on every attempt.
+    // `limits.cost_microusd` is task-wide across execution attempts, so an
+    // attempt gets what earlier ones left — see `domain/budget.ts` for the
+    // floor that keeps an exhausted retry able to report why it failed.
+    maxBudgetUsd:
+      attemptBudgetMicrousd(dispatch.limits.cost_microusd, dispatch.cost_spent_so_far_microusd) /
+      1_000_000,
     abortController: controller,
     env: {
       // `Options.env`, when set, REPLACES the subprocess environment
@@ -474,10 +505,13 @@ function computeSpend(
   finalResult: SDKResultMessage | null,
   priorSpendMicrousd: number,
   mapperState: MapperState,
-): { costMicrousd: number; tokensSpent: number } {
+): { costMicrousd: number | undefined; tokensSpent: number } {
   if (finalResult === null) {
     const tokens = cumulativeTokens(mapperState);
-    return { costMicrousd: tokens, tokensSpent: tokens };
+    // Intermediate SDK messages carry token counts but no authoritative price.
+    // Returning that count as micro-USD would corrupt the ledger; omitting
+    // cost makes the reconciliation-required failure explicit instead.
+    return { costMicrousd: undefined, tokensSpent: tokens };
   }
 
   let costUsd = 0;

@@ -48,12 +48,10 @@ missing one throws at startup rather than failing a task later.
 | `STATUS_RETRY_LIMIT` / `STATUS_RETRY_WINDOW_MS` | `3` / `30000` | |
 | `SHUTDOWN_GRACE_MS` / `SHUTDOWN_STATUS_TIMEOUT_MS` | `4000` / `2000` | both under B15's five seconds |
 
-*(2026-09-07: `MODEL_MAX_TOKENS` and `BYTES_PER_TOKEN` used to be listed here as dead variables
-pending ticket 14's cleanup. Ticket 14 has since removed both from `config.ts`, so the rows are
-gone from this table too. `fileReadMaxBytes` / `fileWriteMaxBytes` / `listFilesMaxEntries` below are
-now the same kind of leftover — ticket 10 deleted the `read_file`/`write_file`/`list_files` tools
-they bounded, but `config.ts` and its test still declare all three. Flagged for the operator, not
-removed here — it is source code, out of this ticket's scope.)*
+*(2026-09-07: `MODEL_MAX_TOKENS`, `BYTES_PER_TOKEN`, and the `fileReadMaxBytes` /
+`fileWriteMaxBytes` / `listFilesMaxEntries` caps have all since been removed from `config.ts` —
+the first two by ticket 14, the last three along with the `read_file`/`write_file`/`list_files`
+tools they bounded. None of them appear in the table above because none of them exist.)*
 
 ## Tools
 
@@ -78,8 +76,35 @@ FAIL, so a `Bash` tool could read the agent's own process environment (and the c
 in a way the sandbox cannot. `tickets/agent-sdk-migration/17-credential-relocation.md` is a
 placeholder follow-up for that; it exists but is not implemented.
 
-A task ends only when one of the terminating tools is called. Text alone does not end it: the model
-gets one nudge and then the task fails `no_terminal_call`.
+A task ends only when one of the terminating tools is called. Text alone does not end it: a run
+that finishes without calling either fails `no_terminal_call`.
+
+*(2026-09-07: this used to say the model "gets one nudge" first. It does not, and has not since
+ticket 14 deleted the host loop that sent it — the SDK runner never reinstated one, and the
+`NUDGE` string it would have sent was dead code, now removed. The behaviour described here is what
+the code does; reinstating an actual nudge would be a deliberate change, not a fix.)*
+
+## Budget
+
+`limits.cost_microusd` is **task-wide across execution attempts**, which is why the dispatch also
+carries `cost_spent_so_far_microusd`. An attempt is given what earlier attempts left, not the whole
+ceiling again — `domain/budget.ts` owns that arithmetic and `runner/agent-sdk.ts` passes the result
+to the SDK as `maxBudgetUsd`.
+
+Two bounds sit around it. The floor: an attempt is never given less than `MIN_ATTEMPT_BUDGET_MICROUSD`
+($0.05) or the task's own ceiling, whichever is smaller — a retry that can afford nothing produces no
+diagnosis, and an honest `task_failed` is worth more than the last cents of a spent ceiling. The
+clamp: an attempt is never given more than the ceiling, so neither the subtraction nor the floor can
+exceed what the operator approved.
+
+The SDK checks that budget **after a turn is tallied**, so a single attempt can still overshoot by up
+to one turn. That is the accepted regression from the old fail-closed pre-call reservation (ticket 11
+§3) and cannot be reinstated — the host never sees a request before it goes out. The plan ceiling
+(`max_cost_microusd`, enforced by the orchestrator before dispatch) is the bound on total spend.
+
+*(2026-09-07: before this, `maxBudgetUsd` was the whole ceiling on every attempt, so a task under
+`retry {max_attempts: 3}` could spend three ceilings. Reporting was already cumulative; only
+enforcement was not.)*
 
 ## Running it
 

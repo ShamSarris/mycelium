@@ -63,8 +63,3 @@ export function openingMessage(dispatch: TaskDispatch): string {
 
   return lines.join('\n');
 }
-
-/** The one nudge a model gets when it produces text and calls nothing. */
-export const NUDGE =
-  'That did not end the task. Call task_complete if the work is done, or task_failed if it ' +
-  'cannot be. One of those two calls is the only way to finish.';

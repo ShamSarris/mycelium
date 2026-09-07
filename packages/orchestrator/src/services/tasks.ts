@@ -160,12 +160,12 @@ export async function applyFailure(
   plan: PlanRow,
   task: TaskRow,
   reason: string,
-  options: { tokensSpent?: number; costSpentMicrousd?: number } = {},
+  options: { tokensSpent?: number; costSpentMicrousd?: number; costUnknown?: boolean } = {},
 ): Promise<TaskState> {
   const now = deps.clock.now();
   const policy = task.spec.failure_policy ?? { type: 'halt' as const };
   const attempt = task.execution_attempt + 1;
-  const canRetry = policy.type === 'retry' && attempt < policy.max_attempts;
+  const canRetry = !options.costUnknown && policy.type === 'retry' && attempt < policy.max_attempts;
 
   if (canRetry) {
     await client.query(

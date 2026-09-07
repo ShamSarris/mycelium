@@ -222,6 +222,47 @@ describe('the isolation settings', () => {
     const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
     expect(options.maxBudgetUsd).toBe(2.5);
   });
+
+  /**
+   * `limits.cost_microusd` is task-wide across execution attempts. Handing the
+   * SDK the whole ceiling again on a retry let a task under
+   * `retry {max_attempts: 3}` spend three ceilings; `domain/budget.ts` owns the
+   * arithmetic, and this asserts the runner actually consults it.
+   */
+  it('gives a retry only what the ceiling has left, not the whole ceiling again', async () => {
+    queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
+
+    const runner = new AgentSdkRunner(h.deps);
+    await runner.run(
+      taskDispatch({
+        limits: { cost_microusd: 1_000_000, wall_clock_min: 30 },
+        cost_spent_so_far_microusd: 400_000,
+        execution_attempt: 2,
+      }),
+      new AbortController().signal,
+    );
+
+    const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+    expect(options.maxBudgetUsd).toBeCloseTo(0.6, 10);
+  });
+
+  it('still funds an exhausted retry enough to report why it failed', async () => {
+    queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
+
+    const runner = new AgentSdkRunner(h.deps);
+    await runner.run(
+      taskDispatch({
+        limits: { cost_microusd: 1_000_000, wall_clock_min: 30 },
+        cost_spent_so_far_microusd: 1_000_000,
+        execution_attempt: 3,
+      }),
+      new AbortController().signal,
+    );
+
+    const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+    expect(options.maxBudgetUsd).toBeGreaterThan(0);
+    expect(options.maxBudgetUsd).toBeLessThan(1);
+  });
 });
 
 describe('subagents and concurrency (ticket 13)', () => {
@@ -507,6 +548,17 @@ describe('completion', () => {
 });
 
 describe('silence is never success', () => {
+  it('fails for reconciliation instead of treating observed tokens as cost when the final usage report is absent', async () => {
+    queryMock.mockImplementation(() => scriptedQuery([{ message: assistantMessage() }])());
+
+    const runner = new AgentSdkRunner(h.deps);
+    const outcome = await runner.run(taskDispatch(), new AbortController().signal);
+
+    expect(outcome.state).toBe('failed');
+    expect(outcome.error).toContain('cost_unknown');
+    expect(outcome.costMicrousd).toBeUndefined();
+    expect(outcome.tokensSpent).toBeGreaterThanOrEqual(0);
+  });
   it('fails with no_terminal_call when the run ends without a terminal tool call', async () => {
     queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
 
@@ -560,7 +612,9 @@ describe('abort', () => {
     const outcome = await runPromise;
 
     expect(outcome.state).toBe('failed');
-    expect(outcome.error).toBe('aborted: operator cancelled');
+    expect(outcome.error).toContain('aborted: operator cancelled');
+    expect(outcome.error).toContain('cost_unknown');
+    expect(outcome.costMicrousd).toBeUndefined();
 
     const errors = h.broker.ofType('error');
     expect(errors).toContainEqual(
@@ -581,7 +635,9 @@ describe('abort', () => {
     const outcome = await runner.run(taskDispatch(), controller.signal);
 
     expect(outcome.state).toBe('failed');
-    expect(outcome.error).toBe('aborted: shutting down');
+    expect(outcome.error).toContain('aborted: shutting down');
+    expect(outcome.error).toContain('cost_unknown');
+    expect(outcome.costMicrousd).toBeUndefined();
   });
 });
 
@@ -609,6 +665,8 @@ describe('wall clock', () => {
     expect(outcome.state).toBe('failed');
     expect(outcome.error).toContain('limit_exceeded');
     expect(outcome.error).toContain('wall clock');
+    expect(outcome.error).toContain('cost_unknown');
+    expect(outcome.costMicrousd).toBeUndefined();
 
     const limits = h.broker.ofType('limit.exceeded');
     expect(limits).toContainEqual(
@@ -633,6 +691,7 @@ describe('transport failure', () => {
     expect(outcome.state).toBe('failed');
     expect(outcome.error).toContain('transport_error');
     expect(outcome.error).toContain('claude binary not found');
+    expect(outcome.costMicrousd).toBeUndefined();
     expect(queryMock).toHaveBeenCalledTimes(1);
   });
 });

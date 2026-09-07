@@ -70,9 +70,14 @@ async function provision(deps: Deps, dispatch: PlanDispatch): Promise<void> {
     // removes it with everything else; nothing extra to clean up.
     await mkdir(claudeConfigDir, { recursive: true });
 
-    // The bot token ends up in .git/config inside the environment. Accepted:
-    // the agent holds the same token by design, and the tree is scrubbed at
-    // teardown (ticket 0003 section 13).
+    // The token is handed to git through the environment and read by an inline
+    // credential helper (drivers/git.ts), so it lands in no argument and in
+    // nothing git persists — .git/config included. That matters because .git
+    // sits inside the checkout, which is both the agent's file-tool root and
+    // the tree bind-mounted into the sandbox: a token written there would be
+    // readable by a prompt-injectable model and by a container that is meant to
+    // hold no credentials at all (ticket 0005 part A, retiring ticket 0003's
+    // earlier acceptance of it).
     await deps.git.clone({
       repoUrl: dispatch.gitea.repo_url,
       branch: dispatch.gitea.branch,

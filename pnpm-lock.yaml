@@ -68,7 +68,7 @@ importers:
   packages/worker:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.3.263
+        specifier: 0.3.263
         version: 0.3.263(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(zod@4.5.4)
       '@mycelium/contracts':
         specifier: workspace:*

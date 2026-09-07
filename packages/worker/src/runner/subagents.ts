@@ -48,6 +48,8 @@ export interface SubagentSpec {
   readonly prompt: string;
   readonly tools: readonly string[];
   readonly effort: ModelEffort;
+  /** Explicit finite bound; Agent SDK subagents otherwise inherit an unbounded loop. */
+  readonly maxTurns: number;
 }
 
 /**
@@ -78,6 +80,7 @@ export const SUBAGENT_ROSTER: Readonly<Record<string, SubagentSpec>> = {
       'require a change, say so in your report rather than attempting one.',
     tools: ['Read', 'Glob', 'Grep'],
     effort: 'low',
+    maxTurns: 12,
   },
 };
 
@@ -102,6 +105,7 @@ export function rosterAnnouncement(): AgentEvent {
         prompt: spec.prompt,
         tools: [...spec.tools],
         effort: spec.effort,
+        max_turns: spec.maxTurns,
       })),
     },
   };

@@ -76,6 +76,8 @@ export interface WorkerConfig {
 
   modelId: string;
   modelEffort: ModelEffort;
+  /** Hard upper bound on main-agent API round trips for one task execution. */
+  maxTurns: number;
 
   brokerTimeoutMs: number;
   orchestratorTimeoutMs: number;
@@ -134,6 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
 
     modelId: env.MODEL_ID?.trim() || 'claude-opus-5',
     modelEffort: effort(env.MODEL_EFFORT),
+    maxTurns: integer(env.MAX_TURNS, 'MAX_TURNS', 80, 1),
 
     brokerTimeoutMs: integer(env.BROKER_TIMEOUT_MS, 'BROKER_TIMEOUT_MS', 10_000, 1),
     orchestratorTimeoutMs: integer(

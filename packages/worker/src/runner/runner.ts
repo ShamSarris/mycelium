@@ -14,8 +14,12 @@ export interface TaskRunner {
 
 export interface TaskOutcome {
   state: 'done' | 'failed';
-  /** Task-wide across execution attempts, which is what the status route expects. */
-  costMicrousd: number;
+  /**
+   * Task-wide across execution attempts, which is what the status route
+   * normally expects. It is absent when the SDK ended without its final usage
+   * report: tokens observed in intermediate messages are not a price.
+   */
+  costMicrousd?: number;
   /** Task-wide across execution attempts, kept as a detail alongside cost. */
   tokensSpent: number;
   result?: unknown;

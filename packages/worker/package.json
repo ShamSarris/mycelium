@@ -21,7 +21,7 @@
     "start": "node dist/src/index.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.263",
+    "@anthropic-ai/claude-agent-sdk": "0.3.263",
     "@mycelium/contracts": "workspace:*",
     "undici": "^7.2.0",
     "zod": "^4.0.0"
