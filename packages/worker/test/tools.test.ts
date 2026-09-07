@@ -1,151 +1,109 @@
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildRegistry } from '../src/tools/registry.js';
-import type { ToolOutcome, ToolRegistry } from '../src/tools/registry.js';
+import {
+  buildMyceliumServer,
+  createTerminalOutcomeBox,
+  type TerminalOutcomeBox,
+} from '../src/runner/tools.js';
 import { buildTestWorker, BRANCH, type TestWorker } from './helpers/agent.js';
 import { BrokerRejection, sandboxResult } from './helpers/fakes.js';
 
 /**
- * Four groups of tools, one rule running through all of them: the host decides
- * what a call is allowed to do before it does it, and a refusal comes back as
- * a tool result the model can act on rather than as an exception.
+ * The worker's tools, re-expressed as an in-process MCP server (ticket 10).
+ * Every test drives the *real* MCP protocol path — an in-memory client
+ * connected to the server's own `McpServer` instance, exactly the shape the
+ * Agent SDK's own internal client will use in ticket 11 — rather than calling
+ * a tool's handler function directly. That is what makes the validation
+ * tests (wrong type / missing required / unknown extra property) mean
+ * anything: they are proving what the protocol boundary does, not what one
+ * function happens to do when called correctly.
  */
 
 const TASK_ID = '018f3a5c-0000-7000-8000-0000000000c1';
 
 let h: TestWorker;
-let tools: ToolRegistry;
+let outcomeBox: TerminalOutcomeBox;
+let client: Client;
 
 beforeEach(async () => {
   h = await buildTestWorker();
-  tools = buildRegistry(h.deps);
+  outcomeBox = createTerminalOutcomeBox();
+  const server = buildMyceliumServer(h.deps, outcomeBox, TASK_ID);
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([client.connect(clientTransport), server.instance.connect(serverTransport)]);
 });
 
 afterEach(async () => {
+  await client.close();
   await h.close();
 });
 
-function call(name: string, input: unknown): Promise<ToolOutcome> {
-  return tools.invoke({ id: 'tu-1', name, input, taskId: TASK_ID });
+interface Outcome {
+  content: string;
+  isError: boolean;
 }
 
-function content(outcome: ToolOutcome): string {
-  return outcome.kind === 'result' ? outcome.content : JSON.stringify(outcome);
+async function call(name: string, args: unknown): Promise<Outcome> {
+  const result = await client.callTool({ name, arguments: args as Record<string, unknown> });
+  const blocks = result.content as Array<{ type: string; text?: string }>;
+  const content = blocks
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('\n');
+  return { content, isError: Boolean(result.isError) };
 }
 
-describe('declarations', () => {
-  it('declares every tool the loop offers, and nothing else', () => {
-    expect(tools.declarations().map((tool) => tool.name).sort()).toEqual([
+describe('the mycelium MCP server', () => {
+  it('exposes exactly the four surviving tools', async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
       'git',
-      'list_files',
-      'read_file',
       'sandbox',
       'task_complete',
       'task_failed',
-      'write_file',
     ]);
   });
 
-  it('closes every schema, so the provider constrains arguments too', () => {
-    for (const tool of tools.declarations()) {
-      expect(tool.inputSchema.additionalProperties).toBe(false);
-      expect(tool.inputSchema.type).toBe('object');
+  it('closes every tool schema, so an unknown key is refused like the old additionalProperties: false', async () => {
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      expect((tool.inputSchema as Record<string, unknown>).additionalProperties).toBe(false);
     }
-  });
-
-  it('closes every object in every schema, nested ones included', () => {
-    // The provider rejects an object schema whose additionalProperties is
-    // anything but false - a nested one counts. A top-level-only check let the
-    // sandbox tool ship an open `env` map that 400d on the first real call.
-    const offenders: string[] = [];
-    const walk = (node: unknown, path: string): void => {
-      if (node === null || typeof node !== 'object') return;
-      const schema = node as Record<string, unknown>;
-      if (schema.type === 'object' && schema.additionalProperties !== false) {
-        offenders.push(path);
-      }
-      for (const [key, value] of Object.entries(schema)) walk(value, `${path}.${key}`);
-    };
-    for (const tool of tools.declarations()) walk(tool.inputSchema, tool.name);
-    expect(offenders).toEqual([]);
-  });
-
-  it('uses only keywords the strict schema subset accepts, nested schemas included', () => {
-    // `strict: true` on the declaration (transport.ts) makes the provider
-    // validate each schema against a restricted JSON Schema subset, and a
-    // keyword outside it 400s the whole request - `sandbox` shipped
-    // `minItems`/`minimum` that failed on the first real call. The walk visits
-    // schema positions only, so a property *named* e.g. `pattern` is not a
-    // false positive. Subset per the structured-outputs docs: object/array/
-    // string/integer/number/boolean/null, enum/const/anyOf/allOf/$ref, a fixed
-    // set of string formats, and `additionalProperties: false` - nothing else.
-    const BANNED = new Set([
-      'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
-      'minLength', 'maxLength', 'pattern',
-      'minItems', 'maxItems', 'uniqueItems', 'contains', 'minContains', 'maxContains', 'prefixItems',
-      'minProperties', 'maxProperties', 'patternProperties', 'propertyNames',
-      'dependentRequired', 'dependentSchemas', 'unevaluatedProperties', 'unevaluatedItems',
-      'oneOf', 'not', 'if', 'then', 'else', 'default',
-    ]);
-    const OK_FORMATS = new Set([
-      'date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid',
-    ]);
-    const offenders: string[] = [];
-    const walk = (schema: unknown, path: string): void => {
-      if (schema === null || typeof schema !== 'object') return;
-      const s = schema as Record<string, unknown>;
-      for (const key of Object.keys(s)) {
-        if (BANNED.has(key)) offenders.push(`${path}.${key}`);
-      }
-      if (typeof s.format === 'string' && !OK_FORMATS.has(s.format)) {
-        offenders.push(`${path}.format=${s.format}`);
-      }
-      if (s.properties !== null && typeof s.properties === 'object') {
-        for (const [name, sub] of Object.entries(s.properties as Record<string, unknown>)) {
-          walk(sub, `${path}.properties.${name}`);
-        }
-      }
-      walk(s.items, `${path}.items`);
-      if (typeof s.additionalProperties === 'object') {
-        walk(s.additionalProperties, `${path}.additionalProperties`);
-      }
-      for (const comb of ['anyOf', 'allOf', 'oneOf'] as const) {
-        if (Array.isArray(s[comb])) {
-          (s[comb] as unknown[]).forEach((sub, i) => walk(sub, `${path}.${comb}[${i}]`));
-        }
-      }
-      for (const bag of ['$defs', 'definitions'] as const) {
-        if (s[bag] !== null && typeof s[bag] === 'object') {
-          for (const [name, sub] of Object.entries(s[bag] as Record<string, unknown>)) {
-            walk(sub, `${path}.${bag}.${name}`);
-          }
-        }
-      }
-    };
-    for (const tool of tools.declarations()) walk(tool.inputSchema, tool.name);
-    expect(offenders).toEqual([]);
-  });
-
-  it('returns the same declarations every time, so the cached prefix holds', () => {
-    expect(tools.declarations()).toEqual(tools.declarations());
   });
 });
 
 describe('validation', () => {
-  it('refuses a call that does not match its schema, without running it', async () => {
-    const outcome = await call('read_file', { paths: ['a.ts'] });
+  it('refuses a call missing a required field, without running it', async () => {
+    const outcome = await call('sandbox', { image: 'node:22' }); // no cmd
 
-    expect(outcome.kind).toBe('result');
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('paths');
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content).toContain('cmd');
+    expect(h.broker.sandboxCalls).toHaveLength(0);
   });
 
-  it('refuses an unknown tool', async () => {
+  it('refuses a call whose field is the wrong type', async () => {
+    const outcome = await call('sandbox', { image: 'node:22', cmd: 'npm test' }); // cmd is a string, not an array
+
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content).toContain('cmd');
+    expect(h.broker.sandboxCalls).toHaveLength(0);
+  });
+
+  it('refuses a call carrying an unknown extra property', async () => {
+    const outcome = await call('sandbox', { image: 'node:22', cmd: ['npm', 'test'], bogus: 1 });
+
+    expect(outcome.isError).toBe(true);
+    expect(h.broker.sandboxCalls).toHaveLength(0);
+  });
+
+  it('refuses an unknown tool, as isError content rather than a thrown exception', async () => {
     const outcome = await call('rm_rf', { path: '/' });
 
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('rm_rf');
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content).toContain('rm_rf');
   });
 
   it('never reaches the broker for a call it refused', async () => {
@@ -174,7 +132,7 @@ describe('sandbox', () => {
       network: true,
       limits: { timeout_sec: 120 },
     });
-    expect(content(outcome)).toContain('all tests passed');
+    expect(outcome.content).toContain('all tests passed');
   });
 
   it('reports the exit code, so the model knows whether it worked', async () => {
@@ -185,11 +143,11 @@ describe('sandbox', () => {
 
     const outcome = await call('sandbox', { image: 'node:22', cmd: ['npm', 'test'] });
 
-    expect(content(outcome)).toContain('exit code 1');
-    expect(content(outcome)).toContain('FAIL src/a.test.ts');
+    expect(outcome.content).toContain('exit code 1');
+    expect(outcome.content).toContain('FAIL src/a.test.ts');
     // A non-zero exit is a result, not a tool error: the model asked a
     // question and got an answer it can act on.
-    expect(outcome).toMatchObject({ isError: false });
+    expect(outcome.isError).toBe(false);
   });
 
   it('says when output was truncated rather than pretending it was all of it', async () => {
@@ -197,7 +155,8 @@ describe('sandbox', () => {
       stdout: { preview: 'head...tail', bytes: 900_000, truncated: true },
     });
 
-    expect(content(await call('sandbox', { image: 'node:22', cmd: ['ls'] }))).toContain('900000');
+    const outcome = await call('sandbox', { image: 'node:22', cmd: ['ls'] });
+    expect(outcome.content).toContain('900000');
   });
 
   it('folds env pairs into a map for the broker', async () => {
@@ -225,8 +184,8 @@ describe('sandbox', () => {
 
     const outcome = await call('sandbox', { image: 'evil:latest', cmd: ['sh'] });
 
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('image_not_allowed');
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content).toContain('image_not_allowed');
   });
 
   it('refuses to set the proxy variables the supervisor owns', async () => {
@@ -238,130 +197,22 @@ describe('sandbox', () => {
 
     // The broker refuses this too, but catching it here keeps a pointless
     // round trip and a confusing error out of the transcript.
-    expect(outcome).toMatchObject({ isError: true });
+    expect(outcome.isError).toBe(true);
     expect(h.broker.sandboxCalls).toHaveLength(0);
   });
-});
 
-describe('the file tools', () => {
-  beforeEach(async () => {
-    await mkdir(path.join(h.workdir, 'src'), { recursive: true });
-    await writeFile(path.join(h.workdir, 'src', 'index.ts'), 'export const a = 1;\n');
+  it('refuses an empty cmd array, argv must have at least one element', async () => {
+    const outcome = await call('sandbox', { image: 'node:22', cmd: [] });
+
+    expect(outcome.isError).toBe(true);
+    expect(h.broker.sandboxCalls).toHaveLength(0);
   });
 
-  it('reads a file inside the checkout', async () => {
-    expect(content(await call('read_file', { path: 'src/index.ts' }))).toContain(
-      'export const a = 1;',
-    );
-  });
+  it('refuses a non-positive timeout_sec', async () => {
+    const outcome = await call('sandbox', { image: 'node:22', cmd: ['ls'], timeout_sec: 0 });
 
-  it('writes a file and creates the directories it needs', async () => {
-    await call('write_file', { path: 'src/deep/new.ts', content: 'export {};\n' });
-
-    expect(await readFile(path.join(h.workdir, 'src', 'deep', 'new.ts'), 'utf8')).toBe(
-      'export {};\n',
-    );
-  });
-
-  it('lists what is there, relative to the checkout', async () => {
-    const listed = content(await call('list_files', { path: 'src' }));
-
-    expect(listed).toContain('index.ts');
-    expect(listed).not.toContain(h.workdir);
-  });
-
-  it.each([
-    ['a traversal', '../outside.txt'],
-    ['an absolute path', '/etc/passwd'],
-    ['a traversal through a real directory', 'src/../../outside.txt'],
-  ])('refuses %s', async (_name, candidate) => {
-    const outcome = await call('read_file', { path: candidate });
-
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('checkout');
-  });
-
-  it('refuses a symlink inside the checkout that points out of it', async () => {
-    const outside = path.join(h.runDir, 'outside');
-    await mkdir(outside, { recursive: true });
-    await writeFile(path.join(outside, 'secret'), 'token\n');
-    const link = path.join(h.workdir, 'escape');
-    await symlink(outside, link, 'junction').catch(async () => {
-      await symlink(outside, link);
-    });
-
-    const outcome = await call('read_file', { path: 'escape/secret' });
-
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).not.toContain('token');
-  });
-
-  it('refuses a write that would escape, before creating anything', async () => {
-    const outcome = await call('write_file', { path: '../escaped.ts', content: 'x' });
-
-    expect(outcome).toMatchObject({ isError: true });
-  });
-
-  it('bounds a read, because the result lands in a model context', async () => {
-    h = await buildTestWorker({ FILE_READ_MAX_BYTES: '32' });
-    tools = buildRegistry(h.deps);
-    await mkdir(path.join(h.workdir, 'src'), { recursive: true });
-    await writeFile(path.join(h.workdir, 'src', 'big.ts'), 'x'.repeat(5000));
-
-    const outcome = await call('read_file', { path: 'src/big.ts' });
-
-    expect(content(outcome).length).toBeLessThan(500);
-    expect(content(outcome)).toContain('truncated');
-  });
-
-  it('refuses a write larger than the cap rather than half-writing it', async () => {
-    h = await buildTestWorker({ FILE_WRITE_MAX_BYTES: '16' });
-    tools = buildRegistry(h.deps);
-
-    const outcome = await call('write_file', { path: 'big.ts', content: 'x'.repeat(1000) });
-
-    expect(outcome).toMatchObject({ isError: true });
-    await expect(readFile(path.join(h.workdir, 'big.ts'), 'utf8')).rejects.toThrow();
-  });
-
-  it('refuses to read .git, so a credential or a hook is out of reach', async () => {
-    await mkdir(path.join(h.workdir, '.git'), { recursive: true });
-    await writeFile(
-      path.join(h.workdir, '.git', 'config'),
-      '[remote "origin"]\n\turl = http://bot:SECRET-BOT-TOKEN@gitea.tailnet/x.git\n',
-    );
-
-    const outcome = await call('read_file', { path: '.git/config' });
-
-    // This exact call used to return the token (ticket 0005 part A). The token
-    // is no longer written there either; this is the second layer.
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).not.toContain('SECRET-BOT-TOKEN');
-  });
-
-  it('refuses to write a git hook', async () => {
-    const outcome = await call('write_file', {
-      path: '.git/hooks/pre-commit',
-      content: '#!/bin/sh\ncurl evil\n',
-    });
-
-    expect(outcome).toMatchObject({ isError: true });
-  });
-
-  it('still reads and writes .gitignore, which is an ordinary file', async () => {
-    await writeFile(path.join(h.workdir, '.gitignore'), 'dist/\n');
-
-    expect(content(await call('read_file', { path: '.gitignore' }))).toContain('dist/');
-    expect(
-      (await call('write_file', { path: '.gitignore', content: 'node_modules/\n' })).kind,
-    ).toBe('result');
-  });
-
-  it('says plainly when a file is not there', async () => {
-    const outcome = await call('read_file', { path: 'src/missing.ts' });
-
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('src/missing.ts');
+    expect(outcome.isError).toBe(true);
+    expect(h.broker.sandboxCalls).toHaveLength(0);
   });
 });
 
@@ -370,7 +221,7 @@ describe('git', () => {
     const outcome = await call('git', { action: 'commit', message: 'Add the health endpoint' });
 
     expect(h.git.commits).toEqual(['Add the health endpoint']);
-    expect(content(outcome)).toContain('a'.repeat(39) + '1');
+    expect(outcome.content).toContain('a'.repeat(39) + '1');
   });
 
   it('emits a tool-call event carrying the SHA, so history joins the event log', async () => {
@@ -387,14 +238,14 @@ describe('git', () => {
 
     const outcome = await call('git', { action: 'commit', message: 'nothing' });
 
-    expect(content(outcome)).toContain('nothing to commit');
+    expect(outcome.content).toContain('nothing to commit');
     expect(h.broker.ofType('agent.tool_call')[0]?.payload?.commit_sha).toBeUndefined();
   });
 
   it('requires a message to commit', async () => {
     const outcome = await call('git', { action: 'commit' });
 
-    expect(outcome).toMatchObject({ isError: true });
+    expect(outcome.isError).toBe(true);
     expect(h.git.commits).toHaveLength(0);
   });
 
@@ -408,15 +259,18 @@ describe('git', () => {
     const outcome = await call('git', { action: 'push', branch: 'main' });
 
     // Gitea's branch protection would refuse it too (D19). Refusing here
-    // makes it a legible tool result rather than a git error the model has to
-    // interpret.
-    expect(outcome).toMatchObject({ isError: true });
+    // makes it a legible tool result rather than a git error the model has
+    // to interpret.
+    expect(outcome.isError).toBe(true);
     expect(h.git.pushes).toHaveLength(0);
   });
 
   it('reports status and diff', async () => {
-    expect(content(await call('git', { action: 'status' }))).toContain(BRANCH);
-    expect((await call('git', { action: 'diff' })).kind).toBe('result');
+    const status = await call('git', { action: 'status' });
+    expect(status.content).toContain(BRANCH);
+
+    const diff = await call('git', { action: 'diff' });
+    expect(diff.isError).toBe(false);
   });
 
   it('turns a git failure into a tool error the model can react to', async () => {
@@ -424,37 +278,80 @@ describe('git', () => {
 
     const outcome = await call('git', { action: 'push' });
 
-    expect(outcome).toMatchObject({ isError: true });
-    expect(content(outcome)).toContain('remote');
+    expect(outcome.isError).toBe(true);
+    expect(outcome.content).toContain('remote');
+  });
+
+  it('refuses an unrecognized action, closing the enum like the old schema did', async () => {
+    const outcome = await call('git', { action: 'rebase' });
+
+    expect(outcome.isError).toBe(true);
   });
 });
 
 describe('the terminating tools', () => {
-  it('completes with a summary', async () => {
+  it('records a completion in the outcome box and tells the model plainly', async () => {
     const outcome = await call('task_complete', {
       summary: 'added the endpoint',
       commit_sha: 'abc123',
     });
 
-    expect(outcome).toEqual({ kind: 'complete', summary: 'added the endpoint', commitSha: 'abc123' });
+    expect(outcome.isError).toBe(false);
+    expect(outcomeBox.outcome).toEqual({
+      kind: 'complete',
+      summary: 'added the endpoint',
+      commitSha: 'abc123',
+    });
   });
 
-  it('fails with an error class the orchestrator can apply a policy to', async () => {
+  it('records a failure in the outcome box with an error class the orchestrator can apply a policy to', async () => {
     const outcome = await call('task_failed', {
       error_class: 'compile_error',
       detail: 'tsc found 3 errors',
     });
 
-    expect(outcome).toEqual({
+    expect(outcome.isError).toBe(false);
+    expect(outcomeBox.outcome).toEqual({
       kind: 'failed',
       errorClass: 'compile_error',
       detail: 'tsc found 3 errors',
     });
   });
 
-  it('refuses to complete without a summary', async () => {
+  it('refuses to complete without a summary, and does not touch the outcome box', async () => {
     const outcome = await call('task_complete', {});
 
-    expect(outcome).toMatchObject({ kind: 'result', isError: true });
+    expect(outcome.isError).toBe(true);
+    expect(outcomeBox.outcome).toBeNull();
+  });
+
+  it('leaves the outcome box null until a terminal tool is called', () => {
+    expect(outcomeBox.outcome).toBeNull();
+  });
+});
+
+describe('tool descriptions', () => {
+  it('are carried over byte-identical from the original declarations', async () => {
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((tool) => [tool.name, tool.description]));
+
+    expect(byName.get('sandbox')).toBe(
+      'Run a command in an isolated container with the plan checkout mounted at /workspace. ' +
+        'This is how you build, test, and run anything. The container has no route to the ' +
+        'internet except the plan allowlist, and it holds no credentials.',
+    );
+    expect(byName.get('git')).toBe(
+      'Commit and push your work on the plan branch. Commit at every checkpoint and push ' +
+        'often: work that is not pushed does not survive the environment being torn down.',
+    );
+    expect(byName.get('task_complete')).toBe(
+      'End the task successfully. Call this when the work is done and pushed. This is the ' +
+        'only way to report success; text alone does not end the task.',
+    );
+    expect(byName.get('task_failed')).toBe(
+      'End the task as failed. Call this when the work cannot be done. Failing honestly is ' +
+        'better than reporting a success you cannot support; the orchestrator decides what ' +
+        'happens next, and you must not retry the task yourself.',
+    );
   });
 });
