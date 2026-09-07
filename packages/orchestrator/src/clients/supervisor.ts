@@ -23,7 +23,6 @@ export interface PlanDispatch {
   /** The per-plan orchestrator API token, plaintext. The only time it leaves this process. */
   orchestrator_token: string;
   egress: string[];
-  max_concurrent_agents: number;
   env_ttl_min: number;
 }
 

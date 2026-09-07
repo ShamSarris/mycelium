@@ -151,10 +151,11 @@ function publicPlan(plan: Awaited<ReturnType<typeof getPlanRow>>) {
     non_goals: plan.spec.non_goals ?? [],
     egress: plan.spec.egress ?? [],
     max_cost_microusd: plan.spec.max_cost_microusd,
-    // Stopgap: max_concurrent_agents left the plan schema (agent-sdk-migration
-    // tickets 03/04); ticket 13 replaces this with a supervisor-derived value.
-    // Hardcoded until then.
-    max_concurrent_agents: 2,
+    // No concurrency figure appears here. It is not a plan field (ticket 03
+    // removed it) and not an operator-visible ceiling either: the supervisor
+    // derives the real subagent limit from the VM memory it alone can see,
+    // so reporting a number here could only ever be a hardcoded fiction —
+    // which is exactly what it was.
     env_ttl_min: plan.spec.env_ttl_min ?? 240,
     proposed_at: plan.proposed_at,
     proposed_by: plan.proposed_by,

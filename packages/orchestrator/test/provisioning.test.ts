@@ -73,7 +73,9 @@ describe('selecting a supervisor', () => {
     expect(request?.gitea.branch).toBe(`plan/${planId}`);
     expect(request?.gitea.bot_token).toBe(h.deps.tokens.get(planId)?.giteaBotToken);
     expect(request?.orchestrator_token).toBe(h.deps.tokens.get(planId)?.orchestratorToken);
-    expect(request?.max_concurrent_agents).toBe(2);
+    // Removed from the wire: ticket 03 took it off the plan schema and the
+    // orchestrator went on hardcoding a 2 the supervisor never read.
+    expect(request).not.toHaveProperty('max_concurrent_agents');
     expect(request?.env_ttl_min).toBe(240);
   });
 

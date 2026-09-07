@@ -28,7 +28,6 @@ function planDispatch() {
     gitea: { repo_url: 'http://gitea.test/mycelium/demo.git', branch: 'plan/plan-1', bot_token: 'b' },
     orchestrator_token: 't',
     egress: ['example.com'],
-    max_concurrent_agents: 2,
     env_ttl_min: 240,
   };
 }

@@ -62,7 +62,6 @@ export function planDispatch(overrides: Record<string, unknown> = {}): Record<st
     },
     orchestrator_token: 'per-plan-token',
     egress: ['api.github.com'],
-    max_concurrent_agents: 2,
     env_ttl_min: 240,
     ...overrides,
   };

@@ -194,10 +194,6 @@ async function buildPlanDispatch(
     },
     orchestrator_token: secrets.orchestratorToken,
     egress: spec.egress ?? [],
-    // Stopgap: max_concurrent_agents left the plan schema (agent-sdk-migration
-    // tickets 03/04); ticket 13 replaces this with a supervisor-derived value.
-    // Hardcoded until then.
-    max_concurrent_agents: 2,
     env_ttl_min: spec.env_ttl_min ?? 240,
   };
 }
@@ -313,7 +309,15 @@ async function dispatchReadyTasks(deps: Deps): Promise<void> {
     const agent = agentRows[0];
     if (!agent) continue;
 
-    // Stopgap, same as above — hardcoded until ticket 13 lands.
+    // How many tasks may be in flight on one plan's VM at once. Unresolved:
+    // this is a different quantity from the subagent concurrency ticket 13
+    // settled (that one is derived by the supervisor from the VM's memory and
+    // never appears on the wire), and it outlived the stopgap it was written
+    // beside. The agent itself takes one task at a time and refuses a second
+    // with a 409 (`packages/worker/src/dispatch.ts`), so the effective
+    // parallelism is 1 and the extra claim costs a refuse-and-requeue round
+    // trip each tick. Left as-is rather than quietly changed to 1: it is a
+    // behaviour change, not a cleanup.
     const max = 2;
 
     // Claim one at a time so a supervisor that starts rejecting stops the loop
@@ -424,7 +428,7 @@ async function budgetExhausted(
 async function claimNextTask(deps: Deps, plan: PlanRow, max: number): Promise<TaskRow | null> {
   return withTransaction(deps.pool, async (client) => {
     // Serialise claiming per plan so two ticks cannot both read the same
-    // in-flight count and overshoot max_concurrent_agents.
+    // in-flight count and overshoot `max`.
     await client.query('SELECT id FROM plans WHERE id = $1 FOR UPDATE', [plan.id]);
 
     const { rows: counts } = await client.query<{ n: number }>(

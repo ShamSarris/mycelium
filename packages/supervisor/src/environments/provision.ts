@@ -19,7 +19,6 @@ export interface PlanDispatch {
   gitea: { repo_url: string; branch: string; bot_token: string };
   orchestrator_token: string;
   egress: string[];
-  max_concurrent_agents: number;
   env_ttl_min: number;
 }
 
@@ -257,10 +256,12 @@ function validate(body: unknown): PlanDispatch {
     }
   }
 
-  const concurrency = dispatch.max_concurrent_agents;
-  if (!Number.isInteger(concurrency) || concurrency === undefined || concurrency < 1 || concurrency > 4) {
-    throw HttpError.validationFailed('max_concurrent_agents must be an integer between 1 and 4');
-  }
+  // No concurrency figure is validated here any more. It left the plan
+  // schema with ticket 03 and this process stopped reading it with ticket 13,
+  // which derives the subagent ceiling from the memory limit only the
+  // supervisor can see (`domain/concurrency.ts`). A stale orchestrator that
+  // still sends the field is accepted and the field ignored, rather than
+  // rejected over a number with no consumer.
 
   const ttl = dispatch.env_ttl_min;
   if (!Number.isInteger(ttl) || ttl === undefined || ttl < 1) {

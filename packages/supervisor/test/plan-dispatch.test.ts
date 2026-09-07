@@ -222,12 +222,23 @@ describe('POST /plans - terminal rejections', () => {
     expect(response.statusCode).toBe(202);
   });
 
-  it('refuses a concurrency outside the range the plan schema permits', async () => {
-    const tooMany = await h.dispatch({ payload: planDispatch({ max_concurrent_agents: 9 }) });
-    expect(tooMany.statusCode).toBe(400);
+  it('accepts a dispatch carrying no concurrency figure at all', async () => {
+    // `max_concurrent_agents` left the plan schema with ticket 03 and left
+    // the wire with this change. It was still *required* here — validated
+    // 1..4 — long after this process stopped reading it: the supervisor
+    // derives its own subagent ceiling from the memory it alone can see
+    // (`domain/concurrency.ts`), so an operator-authored figure has had no
+    // effect on anything since ticket 13.
+    const response = await h.dispatch({ payload: planDispatch() });
+    expect(response.statusCode).toBe(202);
+  });
 
-    const none = await h.dispatch({ payload: planDispatch({ max_concurrent_agents: 0 }) });
-    expect(none.statusCode).toBe(400);
+  it('ignores a concurrency figure an older orchestrator still sends', async () => {
+    // Forward compatibility in the one direction that matters: the wire
+    // change lands in both processes at once, but a stale orchestrator that
+    // still sends the field must not be rejected over a value nothing reads.
+    const response = await h.dispatch({ payload: planDispatch({ max_concurrent_agents: 9 }) });
+    expect(response.statusCode).toBe(202);
   });
 
   // The orchestrator created plan/<id> at approval, so its absence is a bug
