@@ -53,6 +53,7 @@ vi.mock('../../src/runner/tools.js', async (importOriginal) => {
 });
 
 const { AgentSdkRunner } = await import('../../src/runner/agent-sdk.js');
+const { SUBAGENT_ROSTER } = await import('../../src/runner/subagents.js');
 
 let h: TestWorker;
 
@@ -177,6 +178,9 @@ describe('the isolation settings', () => {
     // ticket 11's own isolation settings would equally apply here.
     const hooks = options.hooks as { PreToolUse?: Array<{ hooks: unknown[] }> };
     expect(hooks.PreToolUse).toBeDefined();
+    // The containment hook is the first entry, and stays the first entry:
+    // the subagent-attribution hook registered beside it is bookkeeping and
+    // must never be mistaken for the one that can deny.
     expect(hooks.PreToolUse?.[0]?.hooks).toHaveLength(1);
 
     const env = options.env as Record<string, string>;
@@ -292,7 +296,7 @@ describe('subagents and concurrency (ticket 13)', () => {
     expect(env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe(String(h.config.maxConcurrentSubagents));
   });
 
-  it("the same registered PreToolUse hook — the only one this session has — denies an out-of-workdir Read regardless of whether the caller is the main agent or a subagent (AgentDefinition carries no hooks field of its own)", async () => {
+  it('denies an out-of-workdir Read through the session-wide PreToolUse hooks, whether the caller is the main agent or a subagent (AgentDefinition carries no hooks field of its own)', async () => {
     queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
 
     const runner = new AgentSdkRunner(h.deps);
@@ -301,21 +305,30 @@ describe('subagents and concurrency (ticket 13)', () => {
 
     const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
 
-    // Only one hook set is ever registered for the whole session — no
-    // per-agent override exists in AgentDefinition — so whatever a subagent's
-    // own Read/Glob/Grep call looks like on the wire, it runs through this
-    // exact function.
+    // One hook set is registered for the whole session — no per-agent
+    // override exists in AgentDefinition — so whatever a subagent's own
+    // Read/Glob/Grep call looks like on the wire, it runs through these.
+    // Every registered hook is driven rather than just the first: what
+    // matters is that the set denies, not which member of it does, and
+    // asserting a count would break the next time one is added.
     const hooks = options.hooks as { PreToolUse: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> };
-    expect(hooks.PreToolUse).toHaveLength(1);
-    const hook = hooks.PreToolUse[0]?.hooks[0];
-    if (hook === undefined) throw new Error('PreToolUse hook was not registered');
+    const registered = hooks.PreToolUse.flatMap((entry) => entry.hooks);
+    expect(registered.length).toBeGreaterThan(0);
 
-    const result = (await hook({
-      tool_name: 'Read',
-      tool_input: { file_path: '/etc/passwd' },
-    })) as { hookSpecificOutput?: { permissionDecision?: string } };
+    const decisions: string[] = [];
+    for (const hook of registered) {
+      const result = (await hook({
+        tool_name: 'Read',
+        tool_input: { file_path: '/etc/passwd' },
+        tool_use_id: 'toolu_1',
+      })) as { hookSpecificOutput?: { permissionDecision?: string } };
+      const decision = result.hookSpecificOutput?.permissionDecision;
+      if (decision !== undefined) decisions.push(decision);
+    }
 
-    expect(result.hookSpecificOutput?.permissionDecision).toBe('deny');
+    // Exactly one: a second hook that also denied would mean the bookkeeping
+    // hook had grown an opinion it must never have.
+    expect(decisions).toEqual(['deny']);
     const denials = h.broker.ofType('agent.tool_call');
     expect(denials).toContainEqual(
       expect.objectContaining({
@@ -794,5 +807,178 @@ describe('the commit-cadence instrument', () => {
   it('gives the git tool a commit box to record into', async () => {
     await runWith([resultMessage()]);
     expect(capturedCommitBox).toEqual({ commits: 0 });
+  });
+});
+
+/**
+ * Subagent observability. The lifecycle events come from hooks rather than
+ * from the message stream, so these drive the registered hook callbacks
+ * directly — the same way the containment suite above drives `PreToolUse`.
+ */
+describe('subagent observability', () => {
+  async function optionsFor(): Promise<Record<string, unknown>> {
+    queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
+    const runner = new AgentSdkRunner(h.deps);
+    const runPromise = runner.run(taskDispatch(), new AbortController().signal);
+    capturedOutcomeBox!.outcome = { kind: 'complete', summary: 'done' };
+    await runPromise;
+    return (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+  }
+
+  function hooksOf(
+    options: Record<string, unknown>,
+    event: string,
+  ): Array<(input: unknown) => Promise<unknown>> {
+    const registered = options.hooks as Record<string, Array<{ hooks: Array<(i: unknown) => Promise<unknown>> }>>;
+    return (registered[event] ?? []).flatMap((entry) => entry.hooks);
+  }
+
+  it('announces the roster once, so the dashboard shows the definition that actually ran', async () => {
+    await optionsFor();
+
+    const announcements = h.broker
+      .ofType('agent.tool_call')
+      .filter((event) => (event.payload as { phase?: string }).phase === 'subagent_roster');
+
+    expect(announcements).toHaveLength(1);
+    const subagents = (announcements[0]?.payload as { subagents: Array<{ name: string }> }).subagents;
+    expect(subagents.map((entry) => entry.name)).toEqual(Object.keys(SUBAGENT_ROSTER));
+  });
+
+  it('offers the SDK exactly the roster this module publishes, and no second copy of it', async () => {
+    const agents = (await optionsFor()).agents as Record<string, { tools?: string[] }>;
+
+    expect(Object.keys(agents)).toEqual(Object.keys(SUBAGENT_ROSTER));
+    for (const [name, spec] of Object.entries(SUBAGENT_ROSTER)) {
+      expect(agents[name]?.tools).toEqual([...spec.tools]);
+    }
+  });
+
+  it('registers a hook for each end of the subagent lifecycle', async () => {
+    const options = await optionsFor();
+
+    expect(hooksOf(options, 'SubagentStart')).toHaveLength(1);
+    expect(hooksOf(options, 'SubagentStop')).toHaveLength(1);
+  });
+
+  it('reports a spawn and a stop, with how long the subagent ran', async () => {
+    const options = await optionsFor();
+    h.clock.set(new Date(10_000));
+    await hooksOf(options, 'SubagentStart')[0]?.({
+      hook_event_name: 'SubagentStart',
+      agent_id: 'ag_7',
+      agent_type: 'explorer',
+    });
+    h.clock.set(new Date(13_000));
+    await hooksOf(options, 'SubagentStop')[0]?.({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'ag_7',
+      agent_type: 'explorer',
+      last_assistant_message: 'It is in dispatcher.ts.',
+    });
+
+    const phases = h.broker
+      .ofType('agent.tool_call')
+      .map((event) => event.payload as Record<string, unknown>);
+
+    expect(phases).toContainEqual(
+      expect.objectContaining({ phase: 'subagent_start', subagent_id: 'ag_7' }),
+    );
+    expect(phases).toContainEqual(
+      expect.objectContaining({
+        phase: 'subagent_stop',
+        subagent_id: 'ag_7',
+        duration_ms: 3000,
+        last_message: 'It is in dispatcher.ts.',
+      }),
+    );
+  });
+
+  it('carries the task id on a lifecycle event, like every other event this runner emits', async () => {
+    const options = await optionsFor();
+    await hooksOf(options, 'SubagentStart')[0]?.({
+      hook_event_name: 'SubagentStart',
+      agent_id: 'ag_7',
+      agent_type: 'explorer',
+    });
+
+    const start = h.broker
+      .ofType('agent.tool_call')
+      .find((event) => (event.payload as { phase?: string }).phase === 'subagent_start');
+
+    expect(start?.taskId).toBe(taskDispatch().task_id);
+  });
+
+  /**
+   * The join the whole design rests on: `PreToolUse` is the only place the
+   * SDK reports both the tool use id and the subagent that issued it.
+   */
+  it('attributes a tool call made inside a subagent to that subagent', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+
+    queryMock.mockImplementation(() =>
+      scriptedQuery([
+        {
+          message: assistantMessage({
+            content: [{ type: 'tool_use', id: 'toolu_sub', name: 'Grep' }],
+          }),
+        },
+        // Held open so the hook can fire between the tool use and its result,
+        // which is the order the SDK itself guarantees.
+        { gate },
+        {
+          message: {
+            type: 'user',
+            message: {
+              content: [{ type: 'tool_result', tool_use_id: 'toolu_sub', is_error: false }],
+            },
+          },
+        },
+        { message: resultMessage() },
+      ])(),
+    );
+
+    const runner = new AgentSdkRunner(h.deps);
+    const runPromise = runner.run(taskDispatch(), new AbortController().signal);
+    capturedOutcomeBox!.outcome = { kind: 'complete', summary: 'done' };
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+    for (const hook of hooksOf(options, 'PreToolUse')) {
+      await hook({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Grep',
+        tool_input: { pattern: 'x' },
+        tool_use_id: 'toolu_sub',
+        agent_id: 'ag_7',
+        agent_type: 'explorer',
+      });
+    }
+    open();
+    await runPromise;
+
+    const call = h.broker
+      .ofType('agent.tool_call')
+      .find((event) => (event.payload as { tool?: string }).tool === 'Grep');
+
+    expect(call?.payload).toMatchObject({ subagent_id: 'ag_7', subagent_type: 'explorer' });
+  });
+
+  it('never emits a subagent payload key that looksLikeSecretKey would flag', async () => {
+    const options = await optionsFor();
+    await hooksOf(options, 'SubagentStart')[0]?.({
+      hook_event_name: 'SubagentStart',
+      agent_id: 'ag_7',
+      agent_type: 'explorer',
+    });
+
+    for (const event of h.broker.ofType('agent.tool_call')) {
+      for (const key of Object.keys(event.payload ?? {})) {
+        expect(looksLikeSecretKey(key)).toBe(false);
+      }
+    }
   });
 });

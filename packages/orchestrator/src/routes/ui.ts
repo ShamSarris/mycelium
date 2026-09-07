@@ -3,7 +3,7 @@ import type { Deps } from '../deps.js';
 import { HttpError } from '../errors.js';
 import { requireOperator } from '../auth/operator.js';
 import { acknowledgeAlert, listAlerts } from '../services/alerts.js';
-import { queryEvents } from '../services/events.js';
+import { queryEvents, subagentActivity } from '../services/events.js';
 import { monitorSummary, parseWindowDays } from '../services/monitor.js';
 import {
   approvePlan,
@@ -308,12 +308,16 @@ function clampPage(value: string | undefined, pageCount: number): number {
 /** As `overviewModel`, for one plan. Throws the same 404 both routes need. */
 async function planModel(deps: Deps, planId: string, now: Date) {
   const plan = await getPlanRow(deps, planId);
-  const [tasks, events] = await Promise.all([
+  // Subagent activity is its own query rather than a fold over `events`
+  // above: that window is the oldest 50 rows, and the section exists for
+  // exactly the long plan whose subagents fall outside it.
+  const [tasks, events, subagents] = await Promise.all([
     listTasks(deps, planId),
     queryEvents(deps, { planId, limit: 50 }),
+    subagentActivity(deps, planId),
   ]);
 
-  return { now, plan: viewPlan(plan), tasks, events };
+  return { now, plan: viewPlan(plan), tasks, events, subagents };
 }
 
 /** Every project, with the plan counts and spend each has accumulated. */

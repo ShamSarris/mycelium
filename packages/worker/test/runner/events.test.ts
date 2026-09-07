@@ -7,6 +7,7 @@ import {
   type MapperMessage,
   type MapperState,
 } from '../../src/runner/events.js';
+import { createSubagentBox, noteToolUse } from '../../src/runner/subagents.js';
 
 /**
  * The pure event mapper (ticket 11 §6.1): `(sdkMessage, state) => AgentEvent[]`.
@@ -273,5 +274,66 @@ describe('mapSdkMessage', () => {
         expect(looksLikeSecretKey(key)).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * Subagent attribution (the operator asked to see what each subagent is
+ * doing, not only that one ran). The join is `tool_use_id`: the `PreToolUse`
+ * hook is the one place that sees both it and the SDK's `agent_id`, and the
+ * mapper already keys pending tool names by exactly the same id — so the two
+ * halves meet on a value neither had to invent.
+ */
+describe('subagent attribution on a tool call', () => {
+  function toolUse(id: string, name: string): MapperMessage {
+    return {
+      type: 'assistant',
+      message: {
+        model: 'claude-sonnet-5',
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: 'tool_use', id, name }],
+      },
+    };
+  }
+
+  function toolResult(id: string): MapperMessage {
+    return { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id }] } };
+  }
+
+  it('names the subagent that issued a tool call', () => {
+    const state = initialMapperState();
+    const box = createSubagentBox();
+    noteToolUse(box, { tool_use_id: 'tu_1', agent_id: 'ag_7', agent_type: 'explorer' });
+    mapSdkMessage(toolUse('tu_1', 'Grep'), state, box);
+
+    const events = mapSdkMessage(toolResult('tu_1'), state, box);
+
+    expect(events[0]).toMatchObject({
+      type: 'agent.tool_call',
+      payload: { tool: 'Grep', subagent_id: 'ag_7', subagent_type: 'explorer' },
+    });
+  });
+
+  it('leaves a main-thread tool call unattributed rather than guessing', () => {
+    const state = initialMapperState();
+    const box = createSubagentBox();
+    mapSdkMessage(toolUse('tu_2', 'Read'), state, box);
+
+    const events = mapSdkMessage(toolResult('tu_2'), state, box);
+
+    const payload = events[0]?.payload as Record<string, unknown>;
+    expect(payload.tool).toBe('Read');
+    expect(payload.subagent_id).toBeUndefined();
+    expect(payload.subagent_type).toBeUndefined();
+  });
+
+  it('maps without a box at all, which is what every existing caller does', () => {
+    const state = initialMapperState();
+    mapSdkMessage(toolUse('tu_3', 'Read'), state);
+
+    expect(mapSdkMessage(toolResult('tu_3'), state)[0]).toMatchObject({
+      payload: { tool: 'Read' },
+    });
   });
 });

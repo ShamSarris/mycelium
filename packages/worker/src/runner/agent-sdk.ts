@@ -10,6 +10,15 @@ import type { TaskDispatch } from '../protocol.js';
 import { createCommitBox, initialCadenceState, noteToolResult } from './cadence.js';
 import { createContainmentHook } from './containment.js';
 import { cumulativeTokens, initialMapperState, mapSdkMessage, type MapperMessage, type MapperState } from './events.js';
+import {
+  SUBAGENT_ROSTER,
+  createSubagentBox,
+  noteSubagentStart,
+  noteSubagentStop,
+  noteToolUse,
+  rosterAnnouncement,
+  type SubagentBox,
+} from './subagents.js';
 import { openingMessage, systemPrompt } from './prompt.js';
 import type { TaskOutcome, TaskRunner } from './runner.js';
 import { buildMyceliumServer, createTerminalOutcomeBox } from './tools.js';
@@ -65,6 +74,9 @@ export class AgentSdkRunner implements TaskRunner {
     const cadence = initialCadenceState(config.commitCadenceWarnAfter);
     const mcpServer = buildMyceliumServer(deps, outcomeBox, taskId, commitBox);
     const mapperState = initialMapperState(dispatch.cost_spent_so_far_microusd);
+    // Subagent observability. Written by three hooks, read by the mapper;
+    // `runner/subagents.ts` explains why `tool_use_id` is the join.
+    const subagents = createSubagentBox();
 
     // Bridges the caller's `AbortSignal` into the `AbortController` `Options`
     // actually wants. The SDK's own type is `abortController?: AbortController`,
@@ -120,13 +132,17 @@ export class AgentSdkRunner implements TaskRunner {
     // kept alive by a wall-clock guard it no longer needs.
     timer.unref?.();
 
+    // Before the run, not after: an operator watching a plan that stalls
+    // should still be able to see which subagents it was configured with.
+    await deps.broker.emit({ ...rosterAnnouncement(), taskId });
+
     const consume = (async (): Promise<void> => {
       try {
         for await (const message of query({
           prompt: openingMessage(dispatch),
-          options: buildOptions(deps, dispatch, mcpServer, controller),
+          options: buildOptions(deps, dispatch, mcpServer, controller, subagents),
         })) {
-          const events = mapSdkMessage(message as unknown as MapperMessage, mapperState);
+          const events = mapSdkMessage(message as unknown as MapperMessage, mapperState, subagents);
           for (const event of events) {
             await deps.broker.emit({ ...event, taskId });
 
@@ -261,7 +277,7 @@ function isAssistantMessage(message: { type: string }): message is AssistantLike
 // Ticket 13: `Agent` is the SDK's own subagent-spawning tool (its tool_use
 // blocks name it `Agent`; only the older `system:init` tools listing still
 // calls it `Task` — a naming quirk of the installed 0.3.263 SDK, not a typo
-// here). Without it in `tools`, `AGENTS` below is inert: Q2 (01-findings.md,
+// here). Without it in `tools`, the roster below is inert: Q2 (01-findings.md,
 // confirmed live) established that `tools` restricts the model's own
 // callable set, so a tool left out of this list is never even attempted,
 // `agents` map or not.
@@ -275,42 +291,71 @@ const MCP_TOOL_NAMES = [
 ] as const;
 
 /**
- * Ticket 13 §6.2 — the v1 subagent roster. Deliberately one agent, not a
- * fleet (§9's own instruction: "do not add a speculative fleet"): a
- * read-only explorer that can search and read the checkout without writing
- * to the main agent's own context window. `tools` here is a proper subset of
- * `AGENT_SDK_TOOLS` above — no `Write`, `Edit`, or `Agent` (no nesting; spawn
- * depth is separately fixed to 1 via `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`
- * below) — which `test/runner/agent-sdk.test.ts`'s "subagents and
- * concurrency" suite asserts generically, not just for this one entry, so a
- * later addition to this roster is held to the same rule.
- *
- * `effort: 'low'`, independent of `config.modelEffort`: an explorer's job is
- * cheap, bounded search and summarization, not the deep reasoning the main
- * task may need — running it at the parent's own effort would spend more
- * than the work justifies.
+ * Records which subagent issued a tool call, for `runner/events.ts` to read
+ * when the matching result comes back. Structural on purpose: it reads only
+ * the three fields the SDK's own `PreToolUseHookInput` documents, and returns
+ * the empty object that means "no opinion" — this hook must never be able to
+ * deny a call.
  */
-const AGENTS: Record<string, AgentDefinition> = {
-  explorer: {
-    description:
-      'Read-only search and reconnaissance of the checkout: finding where something lives, ' +
-      'how a piece of code is structured, or gathering context before an edit. Cannot write or ' +
-      'edit files. Use this instead of reading many files directly when the goal is to locate ' +
-      'or summarize something, so that exploration does not fill the main context.',
-    prompt:
-      'You search and read the checkout to answer a specific question or locate specific code. ' +
-      'Report what you find concisely. You cannot write or edit files — if the task turns out to ' +
-      'require a change, say so in your report rather than attempting one.',
-    tools: ['Read', 'Glob', 'Grep'],
-    effort: 'low',
-  },
-};
+function createAttributionHook(
+  subagents: SubagentBox,
+): (input: { tool_use_id?: string; agent_id?: string; agent_type?: string }) => Promise<object> {
+  return async (input) => {
+    noteToolUse(subagents, input);
+    return {};
+  };
+}
+
+function createSubagentStartHook(
+  deps: Deps,
+  taskId: string,
+  subagents: SubagentBox,
+): (input: { agent_id: string; agent_type: string }) => Promise<object> {
+  return async (input) => {
+    const event = noteSubagentStart(subagents, input, deps.clock.now().getTime());
+    await deps.broker.emit({ ...event, taskId });
+    return {};
+  };
+}
+
+function createSubagentStopHook(
+  deps: Deps,
+  taskId: string,
+  subagents: SubagentBox,
+): (input: {
+  agent_id: string;
+  agent_type: string;
+  last_assistant_message?: string;
+}) => Promise<object> {
+  return async (input) => {
+    const event = noteSubagentStop(subagents, input, deps.clock.now().getTime());
+    await deps.broker.emit({ ...event, taskId });
+    return {};
+  };
+}
+
+/**
+ * The roster as the SDK wants it. The definitions themselves live in
+ * `runner/subagents.ts`, which the dashboard's announcement is also built
+ * from — one source, so what the operator is shown cannot disagree with what
+ * the model was offered. `tools` is copied because `AgentDefinition` wants a
+ * mutable array and the roster is readonly.
+ */
+function rosterAsAgentDefinitions(): Record<string, AgentDefinition> {
+  return Object.fromEntries(
+    Object.entries(SUBAGENT_ROSTER).map(([name, spec]) => [
+      name,
+      { description: spec.description, prompt: spec.prompt, tools: [...spec.tools], effort: spec.effort },
+    ]),
+  );
+}
 
 function buildOptions(
   deps: Deps,
   dispatch: TaskDispatch,
   mcpServer: ReturnType<typeof buildMyceliumServer>,
   controller: AbortController,
+  subagents: SubagentBox,
 ): Options {
   const { config } = deps;
 
@@ -349,7 +394,7 @@ function buildOptions(
     // docs describe a subagent as inheriting "the built-in tools ...
     // available in the main conversation", not the full built-in catalog —
     // so nothing here can reach beyond what the main agent could already do.
-    agents: AGENTS,
+    agents: rosterAsAgentDefinitions(),
     // Ticket 12: contains the built-in file tools to the plan checkout.
     // `containment.ts` is structural (it must not import this SDK package —
     // see its own header comment), so the cast happens here, at the one
@@ -361,6 +406,18 @@ function buildOptions(
     hooks: {
       PreToolUse: [
         { hooks: [createContainmentHook(deps, dispatch.task_id, config.workdir) as unknown as HookCallback] },
+        // A second, separate `PreToolUse` entry rather than a line inside the
+        // containment hook: that file is where a subtle bug is a credential
+        // disclosure, and bookkeeping has no business sharing it. This one
+        // never denies anything — it only records who is calling, which is
+        // the join `runner/subagents.ts` describes.
+        { hooks: [createAttributionHook(subagents) as unknown as HookCallback] },
+      ],
+      SubagentStart: [
+        { hooks: [createSubagentStartHook(deps, dispatch.task_id, subagents) as unknown as HookCallback] },
+      ],
+      SubagentStop: [
+        { hooks: [createSubagentStopHook(deps, dispatch.task_id, subagents) as unknown as HookCallback] },
       ],
     },
     // Isolation is mandatory and `settingSources: []` alone is not enough —

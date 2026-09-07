@@ -382,3 +382,217 @@ describe('the overview plan pager', () => {
     expect(plans).toMatch(/page 2 of 2/i);
   });
 });
+
+/**
+ * Subagent tracking on the plan page. The agent may emit only four event
+ * types and the schema's enum is closed, so every one of these rides
+ * `agent.tool_call` under a `phase` key — see
+ * `packages/worker/src/runner/subagents.ts` for why, and for the payload
+ * shapes this suite hand-writes.
+ */
+describe('subagents on a plan', () => {
+  let seq = 0;
+
+  /**
+   * Scoped to the subagents region on purpose. Every payload these tests
+   * write is also rendered verbatim in the event timeline lower down the
+   * page, so a whole-body assertion would pass on the raw JSON and prove
+   * nothing about the section under test.
+   */
+  function subagents(body: string): string {
+    const start = body.indexOf('data-region="subagents"');
+    expect(start, 'no subagents region on the page').toBeGreaterThan(-1);
+    return body.slice(start, body.indexOf('</section>', start));
+  }
+
+  async function agentEvent(planId: string, payload: Record<string, unknown>): Promise<void> {
+    seq += 1;
+    await h.pool.query(
+      `INSERT INTO events (event_id, ts, received_at, source, stream_id, seq, type, severity,
+                           project_id, plan_id, task_id, ingested_by, payload)
+       VALUES ($1, $2, $2, 'agent', 'agent-stream', $3, 'agent.tool_call', 'info',
+               NULL, $4, NULL, NULL, $5)`,
+      [crypto.randomUUID(), h.clock.now(), seq, planId, JSON.stringify(payload)],
+    );
+    h.clock.advance(1000);
+  }
+
+  const ROSTER = {
+    phase: 'subagent_roster',
+    subagents: [
+      {
+        name: 'explorer',
+        description: 'Read-only search and reconnaissance of the checkout.',
+        prompt: 'You search and read the checkout to answer a specific question.',
+        tools: ['Read', 'Glob', 'Grep'],
+        effort: 'low',
+      },
+    ],
+  };
+
+  it('says plainly when a plan has spawned none, rather than showing nothing', async () => {
+    const { plan_id } = await propose(h, costPlan());
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toMatch(/subagent/i);
+  });
+
+  it('shows the definition each subagent runs, which is the only place it is written down', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toContain('explorer');
+    expect(body).toContain('Read-only search and reconnaissance');
+    expect(body).toContain('Read, Glob, Grep');
+    expect(body).toContain('low');
+    // The prompt is the definition. It is long, so it may be behind a
+    // disclosure, but it has to be on the page.
+    expect(body).toContain('You search and read the checkout');
+  });
+
+  it('marks a subagent that started and has not stopped as still running', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toMatch(/running/i);
+  });
+
+  it('reports how long a finished subagent ran and what it concluded', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    await agentEvent(plan_id, {
+      phase: 'subagent_stop',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+      duration_ms: 42_000,
+      last_message: 'The dispatch path is in services/dispatcher.ts.',
+    });
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toContain('42.0s');
+    expect(body).toContain('The dispatch path is in services/dispatcher.ts.');
+  });
+
+  it('counts the tool calls a subagent made, which is what it was doing all that time', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    for (const tool of ['Grep', 'Read', 'Read']) {
+      await agentEvent(plan_id, {
+        tool,
+        outcome: 'result',
+        is_error: false,
+        subagent_id: 'ag_7',
+        subagent_type: 'explorer',
+      });
+    }
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toMatch(/3 tool calls/i);
+  });
+
+  it('does not count the main agent is own tool calls against a subagent', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    await agentEvent(plan_id, {
+      tool: 'Grep',
+      outcome: 'result',
+      is_error: false,
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    // Unattributed: the main agent.
+    await agentEvent(plan_id, { tool: 'Edit', outcome: 'result', is_error: false });
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toMatch(/1 tool call/i);
+    expect(body).not.toMatch(/2 tool calls/i);
+  });
+
+  it('keeps two subagents of the same type apart', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    for (const id of ['ag_7', 'ag_8']) {
+      await agentEvent(plan_id, {
+        phase: 'subagent_start',
+        subagent_id: id,
+        subagent_type: 'explorer',
+      });
+    }
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toContain('ag_7');
+    expect(body).toContain('ag_8');
+  });
+
+  /**
+   * The plan page's event timeline is the oldest 50 rows. A subagent section
+   * built on that window would go blank on exactly the long plan it is for.
+   */
+  it('finds subagent activity that has fallen outside the event timeline window', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    for (let i = 0; i < 80; i += 1) {
+      await agentEvent(plan_id, { tool: 'Read', outcome: 'result', is_error: false });
+    }
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).toContain('ag_7');
+  });
+
+  it('escapes what a subagent said, so its report cannot inject markup', async () => {
+    const { plan_id } = await propose(h, costPlan());
+    await agentEvent(plan_id, ROSTER);
+    await agentEvent(plan_id, {
+      phase: 'subagent_start',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+    });
+    await agentEvent(plan_id, {
+      phase: 'subagent_stop',
+      subagent_id: 'ag_7',
+      subagent_type: 'explorer',
+      duration_ms: 1000,
+      last_message: '<script>alert(1)</script>',
+    });
+
+    const body = subagents((await page(`/ui/plans/${plan_id}`)).body);
+
+    expect(body).not.toContain('<script>alert(1)</script>');
+    expect(body).toContain('&lt;script&gt;');
+  });
+});

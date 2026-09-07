@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../broker.js';
+import { attribution, type SubagentBox } from './subagents.js';
 
 /**
  * The pure event mapper (ticket 11 §6.1): `(sdkMessage, state) => AgentEvent[]`.
@@ -94,7 +95,16 @@ const LIMIT_BY_RESULT_SUBTYPE: Record<string, string> = {
   error_max_turns: 'max_turns',
 };
 
-export function mapSdkMessage(message: MapperMessage, state: MapperState): AgentEvent[] {
+/**
+ * `subagents` is optional because attribution is: a caller with no box gets
+ * exactly the events this mapper produced before subagent tracking existed.
+ * See `runner/subagents.ts` for why the join key is `tool_use_id`.
+ */
+export function mapSdkMessage(
+  message: MapperMessage,
+  state: MapperState,
+  subagents?: SubagentBox,
+): AgentEvent[] {
   if (message.type === 'assistant' && message.message?.usage !== undefined) {
     return mapAssistant(message.message, state);
   }
@@ -112,7 +122,7 @@ export function mapSdkMessage(message: MapperMessage, state: MapperState): Agent
   }
 
   if (message.type === 'user' && Array.isArray(message.message?.content)) {
-    return mapToolResults(message.message.content, state);
+    return mapToolResults(message.message.content, state, subagents);
   }
 
   return [];
@@ -197,7 +207,11 @@ function mapCompactBoundary(metadata: {
   ];
 }
 
-function mapToolResults(content: MapperContentBlock[], state: MapperState): AgentEvent[] {
+function mapToolResults(
+  content: MapperContentBlock[],
+  state: MapperState,
+  subagents?: SubagentBox,
+): AgentEvent[] {
   const events: AgentEvent[] = [];
 
   for (const block of content) {
@@ -205,11 +219,15 @@ function mapToolResults(content: MapperContentBlock[], state: MapperState): Agen
 
     const isError = block.is_error === true;
     const tool = state.pendingToolNames[block.tool_use_id] ?? 'unknown';
+    // Absent for a main-thread call, and left absent rather than filled with
+    // a placeholder: "no subagent" and "some subagent we could not name" are
+    // different facts, and the dashboard groups on this key.
+    const by = subagents === undefined ? null : attribution(subagents, block.tool_use_id);
 
     events.push({
       type: 'agent.tool_call',
       severity: isError ? 'warn' : 'info',
-      payload: { tool, outcome: 'result', is_error: isError },
+      payload: { tool, outcome: 'result', is_error: isError, ...(by ?? {}) },
     });
   }
 

@@ -1,5 +1,6 @@
 import type { Plan } from '@mycelium/contracts';
 import { planCostCeiling } from '../domain/budget.js';
+import type { SubagentActivity } from '../services/events.js';
 import type { TaskRow } from '../services/plans.js';
 import { formatCost } from './format.js';
 import { html, raw, type PageParts } from './html.js';
@@ -20,6 +21,7 @@ interface PlanPageInput {
   // `ts` is a string on the wire and in the row: the event log stores what the
   // emitter said, and only the orchestrator's own clock produces Dates here.
   events: Array<{ ts: string; type: string; severity: string; payload: unknown }>;
+  subagents: SubagentActivity;
 }
 
 export function planPage(input: PlanPageInput): PageParts {
@@ -41,6 +43,7 @@ export function planPage(input: PlanPageInput): PageParts {
       { id: 'non-goals', html: nonGoals(spec) },
       { id: 'envelope', html: envelope(spec) },
       { id: 'tasks', html: taskTable(input.tasks) },
+      { id: 'subagents', html: subagentSection(input.subagents) },
       { id: 'manifest', html: manifest(plan) },
       { id: 'events', html: eventList(input.events) },
     ],
@@ -129,6 +132,83 @@ function taskTable(tasks: TaskRow[]): string {
         </tr>`,
       )}
     </table>`;
+}
+
+/**
+ * What the plan's own agent delegated, and to what.
+ *
+ * Two halves, because they answer two different questions. The roster is the
+ * definition — the description, tools, effort and prompt the agent was
+ * configured with — and it is here because it is written down nowhere else
+ * an operator can reach: Mycelium's subagents are worker code, not
+ * `.claude/agents/*.md` files, and the SDK is deliberately started with
+ * `settingSources: []` so the plan checkout cannot define one. The runs are
+ * what actually happened.
+ *
+ * There is no cost column, and that is not an omission. The SDK reports
+ * spend by model, never by subagent, so any per-subagent figure here would
+ * be apportioned — and a made-up number on the page an operator uses to
+ * judge whether a plan is worth its budget is worse than no number.
+ */
+function subagentSection(activity: SubagentActivity): string {
+  const { roster, runs } = activity;
+
+  if (roster.length === 0 && runs.length === 0) {
+    return html`<h2>Subagents</h2>
+      <p class="empty">None. This plan's agent has not reported a subagent roster.</p>`;
+  }
+
+  return html`<h2>Subagents</h2>${raw(rosterList(roster))}${raw(runList(runs))}`;
+}
+
+function rosterList(roster: SubagentActivity['roster']): string {
+  if (roster.length === 0) return '';
+
+  return html`<table>
+      <tr><th>agent</th><th>tools</th><th>effort</th><th>definition</th></tr>
+      ${roster.map(
+        (spec) => html`<tr>
+          <td><strong>${spec.name}</strong></td>
+          <td class="meta">${spec.tools.join(', ')}</td>
+          <td class="meta">${spec.effort}</td>
+          <td>
+            ${spec.description}
+            <details><summary class="meta">prompt</summary><pre><code>${spec.prompt}</code></pre></details>
+          </td>
+        </tr>`,
+      )}
+    </table>`;
+}
+
+function runList(runs: SubagentActivity['runs']): string {
+  if (runs.length === 0) {
+    return html`<p class="empty">The agent has not spawned one yet.</p>`;
+  }
+
+  return html`<table>
+      <tr><th>id</th><th>agent</th><th>state</th><th>ran for</th><th>work</th><th>reported</th></tr>
+      ${runs.map(
+        (run) => html`<tr>
+          <td class="meta"><code>${run.id}</code></td>
+          <td>${run.type}</td>
+          <td>${run.running ? 'running' : 'finished'}</td>
+          <td class="meta">${formatDuration(run.durationMs)}</td>
+          <td class="meta">${run.toolCalls} tool call${run.toolCalls === 1 ? '' : 's'}</td>
+          <td>${run.lastMessage ?? ''}</td>
+        </tr>`,
+      )}
+    </table>`;
+}
+
+/**
+ * Seconds to one decimal. A subagent's whole point is that it is short —
+ * minutes would round every useful difference away, and raw milliseconds
+ * make an operator do arithmetic to compare two rows.
+ */
+function formatDuration(ms: number | null): string {
+  if (ms === null) return '';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${String(Math.round((ms % 60_000) / 1000))}s`;
 }
 
 function manifest(plan: PlanView): string {

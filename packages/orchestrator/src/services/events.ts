@@ -266,3 +266,149 @@ export async function queryEvents(deps: Deps, query: EventQuery): Promise<EventR
   );
   return rows;
 }
+
+/**
+ * Subagent activity for one plan.
+ *
+ * A separate query rather than a fold over the plan page's own event window,
+ * which is the oldest 50 rows: a subagent section built on that window would
+ * go blank on exactly the long-running plan it exists to explain.
+ *
+ * Everything here rides `agent.tool_call` under a `phase` key, because the
+ * agent may emit only four event types and the event schema's enum is closed
+ * — `packages/worker/src/runner/subagents.ts` carries the reasoning and the
+ * payload shapes. Nothing in this module validates those payloads: they are
+ * written by a semi-trusted agent, so every field is treated as unknown text
+ * and escaped at render.
+ */
+export interface SubagentDefinition {
+  name: string;
+  description: string;
+  prompt: string;
+  tools: string[];
+  effort: string;
+}
+
+export interface SubagentRun {
+  id: string;
+  type: string;
+  running: boolean;
+  startedAt: Date | null;
+  durationMs: number | null;
+  lastMessage: string | null;
+  toolCalls: number;
+}
+
+export interface SubagentActivity {
+  /** What the agent announced it was configured with, or empty if it never said. */
+  roster: SubagentDefinition[];
+  runs: SubagentRun[];
+}
+
+const LIFECYCLE_PHASES = ['subagent_roster', 'subagent_start', 'subagent_stop'];
+
+/** Enough for a long plan; a run that spawns more than this is its own problem. */
+const SUBAGENT_EVENT_LIMIT = 500;
+
+export async function subagentActivity(deps: Deps, planId: string): Promise<SubagentActivity> {
+  const [lifecycle, counts] = await Promise.all([
+    deps.pool.query<{ ts: Date; payload: Record<string, unknown> }>(
+      `SELECT ts, payload FROM events
+        WHERE plan_id = $1 AND type = 'agent.tool_call'
+          AND payload->>'phase' = ANY($2)
+        ORDER BY received_at, event_id
+        LIMIT ${SUBAGENT_EVENT_LIMIT}`,
+      [planId, LIFECYCLE_PHASES],
+    ),
+    // Counted in the database rather than folded from rows: a subagent's tool
+    // calls are the one thing here that scales with the length of the run.
+    // `phase IS NULL` excludes the lifecycle events, which carry the same
+    // `subagent_id` and would otherwise inflate every count by two.
+    deps.pool.query<{ subagent_id: string; calls: string }>(
+      `SELECT payload->>'subagent_id' AS subagent_id, count(*)::bigint AS calls
+         FROM events
+        WHERE plan_id = $1 AND type = 'agent.tool_call'
+          AND payload->>'subagent_id' IS NOT NULL
+          AND payload->>'phase' IS NULL
+        GROUP BY 1`,
+      [planId],
+    ),
+  ]);
+
+  // `pg` returns a bigint aggregate as a string, always.
+  const toolCalls = new Map(counts.rows.map((row) => [row.subagent_id, Number(row.calls)]));
+
+  let roster: SubagentDefinition[] = [];
+  const runs = new Map<string, SubagentRun>();
+
+  for (const { ts, payload } of lifecycle.rows) {
+    const phase = String(payload.phase);
+
+    if (phase === 'subagent_roster') {
+      // Last announcement wins: a task retried after a redeploy announces
+      // again, and the newer one describes the agent that is actually running.
+      roster = readRoster(payload.subagents);
+      continue;
+    }
+
+    const id = typeof payload.subagent_id === 'string' ? payload.subagent_id : null;
+    if (id === null) continue;
+    const type = typeof payload.subagent_type === 'string' ? payload.subagent_type : 'unknown';
+
+    if (phase === 'subagent_start') {
+      runs.set(id, {
+        id,
+        type,
+        running: true,
+        startedAt: ts,
+        durationMs: null,
+        lastMessage: null,
+        toolCalls: toolCalls.get(id) ?? 0,
+      });
+      continue;
+    }
+
+    // A stop with no start: the events either arrived out of order or the
+    // start was lost. Reporting the stop alone beats dropping it.
+    const existing = runs.get(id);
+    runs.set(id, {
+      id,
+      type,
+      running: false,
+      startedAt: existing?.startedAt ?? null,
+      durationMs: typeof payload.duration_ms === 'number' ? payload.duration_ms : null,
+      lastMessage: typeof payload.last_message === 'string' ? payload.last_message : null,
+      toolCalls: toolCalls.get(id) ?? 0,
+    });
+  }
+
+  // Still running first, then most recently started: what is happening now is
+  // what an operator opened this page to see.
+  const ordered = [...runs.values()].sort((a, b) => {
+    if (a.running !== b.running) return a.running ? -1 : 1;
+    return (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0);
+  });
+
+  return { roster, runs: ordered };
+}
+
+/** The roster as the agent sent it. Every field is unknown until proven otherwise. */
+function readRoster(value: unknown): SubagentDefinition[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const spec = entry as Record<string, unknown>;
+    if (typeof spec.name !== 'string') return [];
+
+    return [
+      {
+        name: spec.name,
+        description: typeof spec.description === 'string' ? spec.description : '',
+        prompt: typeof spec.prompt === 'string' ? spec.prompt : '',
+        tools: Array.isArray(spec.tools) ? spec.tools.map(String) : [],
+        effort: typeof spec.effort === 'string' ? spec.effort : 'unknown',
+      },
+    ];
+  });
+}
