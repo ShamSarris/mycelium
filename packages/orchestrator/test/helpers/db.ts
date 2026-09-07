@@ -13,7 +13,7 @@ export const MIGRATIONS_DIR = path.resolve(HERE, '../../../../migrations');
  * append-only trigger - do not exist in any substitute.
  */
 export const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgres://mycelium:mycelium@localhost:5433/mycelium';
+  process.env.DATABASE_URL ?? 'postgres://mycelium:mycelium@localhost:15432/mycelium';
 
 export async function testPool(): Promise<Pool> {
   const pool = createPool(TEST_DATABASE_URL, 8);

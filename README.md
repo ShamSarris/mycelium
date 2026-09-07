@@ -48,7 +48,7 @@ Enough to develop against and to exercise the control plane. No gVisor, no Tails
 ```sh
 pnpm install
 pnpm build
-pnpm db:up                          # Postgres 17 on host port 5433
+pnpm db:up                          # Postgres 17 on host port 15432
 
 # A database of its own. The test suite owns `mycelium` and truncates it
 # between tests, so an orchestrator running against it while the tests run
@@ -57,7 +57,7 @@ pnpm db:up                          # Postgres 17 on host port 5433
 # cause. Give the manual run its own database and the two never meet.
 docker exec mycelium-postgres createdb -U mycelium mycelium_dev
 
-DATABASE_URL='postgres://mycelium:mycelium@localhost:5433/mycelium_dev' \
+DATABASE_URL='postgres://mycelium:mycelium@localhost:15432/mycelium_dev' \
 OPERATOR_ALLOWLIST='you@example.com' \
 node packages/orchestrator/dist/src/index.js
 ```

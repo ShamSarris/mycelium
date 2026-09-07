@@ -49,7 +49,7 @@ export function defaultMigrationsDir(from: string = HERE): string {
   throw new Error(`could not find a migrations directory above ${from}`);
 }
 
-export const DEFAULT_DATABASE_URL = 'postgres://mycelium:mycelium@localhost:5433/mycelium';
+export const DEFAULT_DATABASE_URL = 'postgres://mycelium:mycelium@localhost:15432/mycelium';
 
 function intFrom(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === '') return fallback;

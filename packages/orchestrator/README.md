@@ -7,9 +7,9 @@ baseline sections 4 to 7.
 ## Running it
 
 ```bash
-pnpm db:up                     # Postgres 17 on host port 5433
+pnpm db:up                     # Postgres 17 on host port 15432
 pnpm --filter @mycelium/orchestrator build
-DATABASE_URL='postgres://mycelium:mycelium@localhost:5433/mycelium' \
+DATABASE_URL='postgres://mycelium:mycelium@localhost:15432/mycelium' \
 OPERATOR_ALLOWLIST='you@example.com' \
 node packages/orchestrator/dist/src/index.js
 ```
@@ -22,7 +22,7 @@ leased tasks.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `postgres://mycelium:mycelium@localhost:5433/mycelium` | Host port 5433, because 5432 is often already taken locally. |
+| `DATABASE_URL` | `postgres://mycelium:mycelium@localhost:15432/mycelium` | Host port 15432 (5432 and 5433 are both already in use on this machine). |
 | `PORT` | `8080` | |
 | `HOST` | `127.0.0.1` | Loopback only. Tailscale Serve is the front door. |
 | `OPERATOR_ALLOWLIST` | empty | Comma-separated logins. Empty authorises nobody. |
@@ -42,7 +42,7 @@ Supervisors do not self-register. The token is shown once; only its hash is
 stored.
 
 ```bash
-DATABASE_URL='postgres://mycelium:mycelium@localhost:5433/mycelium' \
+DATABASE_URL='postgres://mycelium:mycelium@localhost:15432/mycelium' \
 node packages/orchestrator/scripts/register-supervisor.mjs \
   --name worker-dev-1 --env dev --url http://worker-dev-1.tailnet:8080
 ```
@@ -70,7 +70,7 @@ point is to watch provisioning back off.
 docker exec mycelium-postgres createdb -U mycelium mycelium_smoke
 node packages/orchestrator/scripts/stub-gitea.mjs --port 3111 &
 
-DATABASE_URL='postgres://mycelium:mycelium@localhost:5433/mycelium_smoke' \
+DATABASE_URL='postgres://mycelium:mycelium@localhost:15432/mycelium_smoke' \
 OPERATOR_ALLOWLIST='sam@example.com' PORT=8099 \
 GITEA_BASE_URL='http://127.0.0.1:3111' GITEA_ADMIN_TOKEN='stub' \
 DISPATCHER_INTERVAL_MS=1000 \
@@ -78,7 +78,7 @@ node packages/orchestrator/dist/src/index.js &
 
 curl -s http://127.0.0.1:8099/healthz
 
-DATABASE_URL='postgres://mycelium:mycelium@localhost:5433/mycelium_smoke' \
+DATABASE_URL='postgres://mycelium:mycelium@localhost:15432/mycelium_smoke' \
 node packages/orchestrator/scripts/register-supervisor.mjs \
   --name worker-dev-1 --env dev --url http://127.0.0.1:9999
 
