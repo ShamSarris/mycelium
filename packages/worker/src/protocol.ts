@@ -29,8 +29,9 @@ export function rpcError(code: string, message: string): RpcResponse {
  * the orchestrator's `TaskDispatch` ([clients/supervisor.ts]); the supervisor
  * never inspects it, so this is the first place it is given a shape.
  *
- * `tokens_spent_so_far` is the reason a retry does not re-grant the whole
- * ceiling: `limits.tokens` is task-wide across execution attempts.
+ * `cost_spent_so_far_microusd` is the reason a retry does not re-grant the
+ * whole ceiling: `limits.cost_microusd` is task-wide across execution
+ * attempts. Cost-denominated (ticket 03), not tokens.
  */
 export interface TaskDispatch {
   plan_id: string;
@@ -39,8 +40,8 @@ export interface TaskDispatch {
   dispatch_id: string;
   execution_attempt: number;
   description: string;
-  limits: { tokens: number; wall_clock_min: number };
-  tokens_spent_so_far: number;
+  limits: { cost_microusd: number; wall_clock_min: number };
+  cost_spent_so_far_microusd: number;
 }
 
 /** The answer to `agent.ping`. A probe, not a debugging interface. */

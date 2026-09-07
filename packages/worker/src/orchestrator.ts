@@ -12,9 +12,15 @@ export interface OrchestratorClient {
   reportStatus(taskId: string, report: StatusReport, timeoutMs?: number): Promise<void>;
 }
 
-/** The orchestrator's `StatusReport`, matched field for field. */
+/**
+ * The orchestrator's `StatusReport`, matched field for field.
+ *
+ * `cost_spent_microusd` is authoritative (ticket 03); `tokens_spent` is kept
+ * as a detail alongside it.
+ */
 export interface StatusReport {
   state: 'running' | 'done' | 'failed';
+  cost_spent_microusd?: number;
   tokens_spent?: number;
   result?: unknown;
   error?: string;

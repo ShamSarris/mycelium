@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { looksLikeSecretKey } from '@mycelium/contracts';
 import { runTask } from '../src/loop/run.js';
 import type { ContentBlock, ModelResponse } from '../src/transport/transport.js';
 import { buildTestWorker, taskDispatch, type TestWorker } from './helpers/agent.js';
@@ -62,7 +63,7 @@ describe('a task that completes', () => {
 
     const outcome = await runTask(
       h.deps,
-      taskDispatch({ tokens_spent_so_far: 1000, execution_attempt: 2 }),
+      taskDispatch({ cost_spent_so_far_microusd: 1000, execution_attempt: 2 }),
       tools,
       new AbortController().signal,
     );
@@ -70,6 +71,7 @@ describe('a task that completes', () => {
     // A retry that reported only its own spend would let the orchestrator
     // believe the task had used 500 tokens across two attempts.
     expect(outcome.tokensSpent).toBe(1500);
+    expect(outcome.costMicrousd).toBe(1500);
   });
 
   it('threads tool results back and keeps going', async () => {
@@ -264,7 +266,7 @@ describe('events', () => {
 
     await runTask(
       h.deps,
-      taskDispatch({ tokens_spent_so_far: 1000 }),
+      taskDispatch({ cost_spent_so_far_microusd: 1000 }),
       tools,
       new AbortController().signal,
     );
@@ -275,6 +277,38 @@ describe('events', () => {
     // lose spend, and a retry must not reset the running total.
     expect(calls[0]?.payload?.tokens_total).toBe(1200);
     expect(calls[1]?.payload?.tokens_total).toBe(1400);
+    // Cost mirrors the token total for now: domain/budget.ts is not converted
+    // (ticket 07 decision), so the same cumulative number is reported under
+    // both names until tickets 09-11 install real cost tracking.
+    expect(calls[0]?.payload?.cost_total_microusd).toBe(1200);
+    expect(calls[1]?.payload?.cost_total_microusd).toBe(1400);
+  });
+
+  it('emits cache_write_tokens, which counted toward the budget but was never reported', async () => {
+    h.transport.push(
+      turn([completes()], { usage: usage({ cacheWriteTokens: 40 }) }),
+    );
+
+    await run();
+
+    const call = h.broker.ofType('agent.model_call')[0];
+    expect(call?.payload?.cache_write_tokens).toBe(40);
+  });
+
+  it('never uses an agent.model_call payload key that looksLikeSecretKey would flag', async () => {
+    h.transport.push(
+      turn([completes()], {
+        usage: usage({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 5 }),
+      }),
+    );
+
+    await run();
+
+    const call = h.broker.ofType('agent.model_call')[0];
+    const payload = call?.payload as Record<string, unknown>;
+    for (const key of Object.keys(payload)) {
+      expect(looksLikeSecretKey(key)).toBe(false);
+    }
   });
 
   it('never emits task.state_changed - the orchestrator records that itself', async () => {

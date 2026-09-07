@@ -32,6 +32,7 @@ export async function runDispatchedTask(
     dispatch.task_id,
     {
       state: outcome.state,
+      cost_spent_microusd: outcome.costMicrousd,
       tokens_spent: outcome.tokensSpent,
       ...(outcome.result === undefined ? {} : { result: outcome.result }),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),

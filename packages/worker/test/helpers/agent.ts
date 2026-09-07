@@ -110,8 +110,8 @@ export function taskDispatch(overrides: Partial<TaskDispatch> = {}): TaskDispatc
     dispatch_id: '018f3a5c-0000-7000-8000-0000000000d1',
     execution_attempt: 1,
     description: 'Add a health endpoint and a test for it.',
-    limits: { tokens: 100_000, wall_clock_min: 30 },
-    tokens_spent_so_far: 0,
+    limits: { cost_microusd: 100_000, wall_clock_min: 30 },
+    cost_spent_so_far_microusd: 0,
     ...overrides,
   };
 }

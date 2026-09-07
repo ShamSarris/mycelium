@@ -22,7 +22,15 @@ import { Conversation } from './state.js';
 
 export interface TaskOutcome {
   state: 'done' | 'failed';
-  /** Task-wide across execution attempts, which is what the status route expects. */
+  /**
+   * Task-wide across execution attempts, which is what the status route
+   * expects. Authoritative (ticket 03), but currently just mirrors
+   * `tokensSpent`: `domain/budget.ts` is not converted to cost (ticket 07
+   * decision — it is deleted by ticket 14), so there is no real cost figure
+   * to report yet. Real cost tracking arrives with tickets 09-11.
+   */
+  costMicrousd: number;
+  /** Task-wide across execution attempts, kept as a detail alongside cost. */
   tokensSpent: number;
   result?: unknown;
   error?: string;
@@ -41,7 +49,7 @@ export async function runTask(
   const system = systemPrompt(config);
   const declarations = tools.declarations();
 
-  let budget = openBudget(dispatch.limits.tokens, dispatch.tokens_spent_so_far);
+  let budget = openBudget(dispatch.limits.cost_microusd, dispatch.cost_spent_so_far_microusd);
   const deadline = clock.now().getTime() + dispatch.limits.wall_clock_min * 60_000;
   let nudged = false;
 
@@ -52,8 +60,9 @@ export async function runTask(
   let sinceCommit = 0;
   let cadenceWarned = false;
 
-  const done = (outcome: Omit<TaskOutcome, 'tokensSpent'>): TaskOutcome => ({
+  const done = (outcome: Omit<TaskOutcome, 'costMicrousd' | 'tokensSpent'>): TaskOutcome => ({
     ...outcome,
+    costMicrousd: cumulative(budget),
     tokensSpent: cumulative(budget),
   });
 
@@ -102,7 +111,7 @@ export async function runTask(
     if (!reservation.ok) {
       await emitLimit(deps, taskId, {
         limit: 'tokens',
-        allowed: dispatch.limits.tokens,
+        allowed: dispatch.limits.cost_microusd,
         spent: cumulative(budget),
       });
       return failed(`limit_exceeded: ${reservation.message}`);
@@ -133,9 +142,17 @@ export async function runTask(
         // spool must not lose spend, and a retry must not reset the total.
         tokens_total: cumulative(budget),
         tokens_this_attempt: budget.attemptSpend,
+        // Mirrors the token totals for now: domain/budget.ts is not converted
+        // to cost (ticket 07 decision, deleted by ticket 14), so there is no
+        // real cost figure yet. Real cost tracking arrives with tickets 09-11.
+        cost_total_microusd: cumulative(budget),
+        cost_this_attempt_microusd: budget.attemptSpend,
         input_tokens: response.usage.inputTokens,
         output_tokens: response.usage.outputTokens,
         cache_read_tokens: response.usage.cacheReadTokens,
+        // Counts toward the budget (domain/budget.ts totalTokens) but was
+        // never emitted until now — a pre-existing reporting gap.
+        cache_write_tokens: response.usage.cacheWriteTokens,
         usage_source: response.usage.source,
       },
     });
@@ -244,7 +261,7 @@ async function invoke(
 
 function terminalOutcome(
   outcome: ToolOutcome,
-  done: (outcome: Omit<TaskOutcome, 'tokensSpent'>) => TaskOutcome,
+  done: (outcome: Omit<TaskOutcome, 'costMicrousd' | 'tokensSpent'>) => TaskOutcome,
 ): TaskOutcome {
   if (outcome.kind === 'complete') {
     return done({

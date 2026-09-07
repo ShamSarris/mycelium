@@ -205,10 +205,10 @@ function parseDispatch(raw: unknown): TaskDispatch | null {
     typeof candidate.dispatch_id !== 'string' ||
     typeof candidate.description !== 'string' ||
     typeof candidate.execution_attempt !== 'number' ||
-    typeof candidate.tokens_spent_so_far !== 'number' ||
+    typeof candidate.cost_spent_so_far_microusd !== 'number' ||
     typeof limits !== 'object' ||
     limits === null ||
-    typeof limits.tokens !== 'number' ||
+    typeof limits.cost_microusd !== 'number' ||
     typeof limits.wall_clock_min !== 'number'
   ) {
     return null;

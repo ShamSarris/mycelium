@@ -13,9 +13,13 @@ import type { NormalizedUsage } from '../transport/transport.js';
  */
 
 export interface Budget {
-  /** `limits.tokens` for this task. Task-wide, not per-attempt. */
+  /**
+   * `limits.cost_microusd` for this task, task-wide and not per-attempt. Fed
+   * in unconverted (ticket 07 decision): this module still does its
+   * arithmetic on whatever unit its caller passes.
+   */
   readonly ceiling: number;
-  /** `tokens_spent_so_far` from the dispatch: what earlier attempts already used. */
+  /** `cost_spent_so_far_microusd` from the dispatch: what earlier attempts already used. */
   readonly priorSpend: number;
   /** Reconciled from provider-reported usage as this attempt proceeds. */
   readonly attemptSpend: number;

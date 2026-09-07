@@ -85,6 +85,7 @@ describe('the report table', () => {
       result: { summary: 'added the endpoint' },
     });
     expect(h.orchestrator.last?.tokens_spent).toBe(150);
+    expect(h.orchestrator.last?.cost_spent_microusd).toBe(150);
   });
 
   it('reports failed with the error class the model gave', async () => {
@@ -103,7 +104,7 @@ describe('the report table', () => {
   it('reports failed with limit_exceeded when the token ceiling is reached', async () => {
     // The reservation alone is bigger than the ceiling, so the very first call
     // is refused before it is sent.
-    await run({ limits: { tokens: 100, wall_clock_min: 30 } });
+    await run({ limits: { cost_microusd: 100, wall_clock_min: 30 } });
 
     expect(h.transport.callCount).toBe(0);
     expect(h.orchestrator.last?.state).toBe('failed');
@@ -121,7 +122,7 @@ describe('the report table', () => {
     };
     h.transport.push(turn([toolUse('list_files')]));
 
-    await run({ limits: { tokens: 1_000_000, wall_clock_min: 30 } });
+    await run({ limits: { cost_microusd: 1_000_000, wall_clock_min: 30 } });
 
     expect(h.orchestrator.last?.error).toContain('limit_exceeded');
     expect(h.broker.ofType('limit.exceeded')[0]?.payload).toMatchObject({
@@ -163,11 +164,12 @@ describe('the report table', () => {
   it('always reports the task-wide token total, whatever the outcome', async () => {
     h.transport.push(new Error('connection reset'));
 
-    await run({ tokens_spent_so_far: 900 });
+    await run({ cost_spent_so_far_microusd: 900 });
 
     // Even a failed attempt has to hand back the running total, or the next
     // attempt would start from a number that is too low.
     expect(h.orchestrator.last?.tokens_spent).toBe(900);
+    expect(h.orchestrator.last?.cost_spent_microusd).toBe(900);
   });
 });
 

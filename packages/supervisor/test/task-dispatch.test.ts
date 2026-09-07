@@ -15,8 +15,8 @@ function taskDispatch(overrides: Record<string, unknown> = {}): Record<string, u
     dispatch_id: '018f3a5c-0000-7000-8000-0000000000d1',
     execution_attempt: 0,
     description: 'Scrape the index page and commit the result',
-    limits: { tokens: 50_000, wall_clock_min: 30 },
-    tokens_spent_so_far: 0,
+    limits: { cost_microusd: 50_000, wall_clock_min: 30 },
+    cost_spent_so_far_microusd: 0,
     ...overrides,
   };
 }

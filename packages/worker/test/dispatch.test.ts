@@ -148,6 +148,30 @@ describe('task.dispatch', () => {
     expect(answer.error?.code).toBe('invalid_params');
     expect(started).toHaveLength(0);
   });
+
+  it('refuses a dispatch carrying the old token-denominated field names', async () => {
+    // The wire-break guard: an orchestrator still on the old contract must be
+    // refused outright rather than have its dispatch coerced.
+    const staleDispatch = {
+      plan_id: PLAN_ID,
+      task_id: 'task-1',
+      local_id: 't1',
+      dispatch_id: 'dispatch-1',
+      execution_attempt: 1,
+      description: 'do a thing',
+      limits: { tokens: 100_000, wall_clock_min: 30 },
+      tokens_spent_so_far: 0,
+    };
+
+    const answer = (await request({
+      method: 'task.dispatch',
+      params: staleDispatch,
+    })) as { ok: boolean; error?: { code: string } };
+
+    expect(answer.ok).toBe(false);
+    expect(answer.error?.code).toBe('invalid_params');
+    expect(started).toHaveLength(0);
+  });
 });
 
 describe('agent.ping', () => {

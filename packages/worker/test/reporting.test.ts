@@ -80,12 +80,14 @@ describe('HttpOrchestratorClient', () => {
     await client().reportStatus(TASK_ID, {
       state: 'done',
       tokens_spent: 4200,
+      cost_spent_microusd: 4200,
       result: { summary: 'added the endpoint', commit_sha: 'abc' },
     });
 
     expect(body).toEqual({
       state: 'done',
       tokens_spent: 4200,
+      cost_spent_microusd: 4200,
       result: { summary: 'added the endpoint', commit_sha: 'abc' },
     });
   });

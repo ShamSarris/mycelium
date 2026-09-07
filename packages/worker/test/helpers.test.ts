@@ -50,11 +50,11 @@ describe('buildTestWorker', () => {
 
   it('builds a dispatch carrying every field the orchestrator sends', async () => {
     h = await buildTestWorker();
-    const dispatch = taskDispatch({ execution_attempt: 2, tokens_spent_so_far: 4200 });
+    const dispatch = taskDispatch({ execution_attempt: 2, cost_spent_so_far_microusd: 4200 });
 
     expect(dispatch.plan_id).toBe(h.config.planId);
     expect(dispatch.execution_attempt).toBe(2);
-    expect(dispatch.tokens_spent_so_far).toBe(4200);
-    expect(dispatch.limits).toEqual({ tokens: 100_000, wall_clock_min: 30 });
+    expect(dispatch.cost_spent_so_far_microusd).toBe(4200);
+    expect(dispatch.limits).toEqual({ cost_microusd: 100_000, wall_clock_min: 30 });
   });
 });
