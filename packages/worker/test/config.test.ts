@@ -86,9 +86,6 @@ describe('loadConfig', () => {
     expect(config.statusRetryLimit).toBe(3);
     expect(config.statusRetryWindowMs).toBe(30_000);
     expect(config.commitCadenceWarnAfter).toBe(25);
-    expect(config.fileReadMaxBytes).toBe(256 * 1024);
-    expect(config.fileWriteMaxBytes).toBe(1024 * 1024);
-    expect(config.listFilesMaxEntries).toBe(500);
     expect(config.maxConcurrentSubagents).toBe(2);
   });
 

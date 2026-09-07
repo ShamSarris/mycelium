@@ -43,8 +43,6 @@ missing one throws at startup rather than failing a task later.
 | `MODEL_ID` | `claude-opus-5` | |
 | `MODEL_EFFORT` | `high` | `low` … `max` |
 | `MAX_CONCURRENT_SUBAGENTS` | `2` | passed straight to `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Ticket 15: the supervisor derives this from its own memory ceiling (`deriveMaxConcurrentSubagents`) and injects it — `MAX_CONCURRENT_AGENTS` no longer exists. The default here only matters with no supervisor (local dev, a test) |
-| `FILE_READ_MAX_BYTES` / `FILE_WRITE_MAX_BYTES` | `256 KiB` / `1 MiB` | |
-| `LIST_FILES_MAX_ENTRIES` | `500` | |
 | `COMMIT_CADENCE_WARN_AFTER` | `25` | tool calls before one warn-only event |
 | `BROKER_TIMEOUT_MS` / `ORCHESTRATOR_TIMEOUT_MS` | `10000` | |
 | `STATUS_RETRY_LIMIT` / `STATUS_RETRY_WINDOW_MS` | `3` / `30000` | |

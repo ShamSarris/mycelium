@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Deps } from '../deps.js';
 import { run as gitRun } from '../tools/git.js';
 import { run as sandboxRun } from '../tools/sandbox.js';
+import type { CommitBox } from './cadence.js';
 
 /**
  * The worker's tools as an in-process MCP server (ticket 10).
@@ -35,7 +36,7 @@ import { run as sandboxRun } from '../tools/sandbox.js';
  *
  * The fix is a small mutable box, `TerminalOutcomeBox`, created once per task
  * by whoever builds the server (`createTerminalOutcomeBox()`) and passed into
- * `buildMyceliumServer(deps, outcomeBox, taskId)`. The `task_complete` and
+ * `buildMyceliumServer(deps, outcomeBox, taskId, commitBox)`. The `task_complete` and
  * `task_failed` handlers write a `TerminalOutcome` into `outcomeBox.outcome`
  * as their *side effect*, and separately return an ordinary, boring
  * `CallToolResult` so the model sees a normal tool result and the SDK's turn
@@ -155,7 +156,16 @@ function buildSandboxTool(deps: Deps) {
   );
 }
 
-function buildGitTool(deps: Deps, taskId: string) {
+/**
+ * The `commitBox` is the second use of the same signalling pattern: `gitRun`
+ * already reports `committed: true` on a successful commit, and the
+ * commit-cadence instrument in `runner/cadence.ts` needs to know about it,
+ * but a tool handler has no channel back to the runner driving `query()`.
+ * Recording it here — before the tool result is returned, and therefore
+ * before that result ever reaches the runner — is what gives the counter its
+ * ordering guarantee.
+ */
+function buildGitTool(deps: Deps, taskId: string, commitBox: CommitBox) {
   return tool(
     'git',
     'Commit and push your work on the plan branch. Commit at every checkpoint and push ' +
@@ -165,7 +175,11 @@ function buildGitTool(deps: Deps, taskId: string) {
       message: z.string().optional().describe('Required for commit. Say why, not what.'),
       branch: z.string().optional().describe('Only the plan branch is allowed.'),
     }),
-    async (args) => toCallToolResult(await gitRun(deps, args, taskId)),
+    async (args) => {
+      const outcome = await gitRun(deps, args, taskId);
+      if (outcome.kind === 'result' && outcome.committed === true) commitBox.commits += 1;
+      return toCallToolResult(outcome);
+    },
   );
 }
 
@@ -216,13 +230,18 @@ function buildTaskFailedTool(outcomeBox: TerminalOutcomeBox) {
  * `runner/host-loop.ts`) so `outcomeBox` and the closed-over `taskId` cannot
  * leak from one task into the next.
  */
-export function buildMyceliumServer(deps: Deps, outcomeBox: TerminalOutcomeBox, taskId: string) {
+export function buildMyceliumServer(
+  deps: Deps,
+  outcomeBox: TerminalOutcomeBox,
+  taskId: string,
+  commitBox: CommitBox,
+) {
   return createSdkMcpServer({
     name: 'mycelium',
     version: '1.0.0',
     tools: [
       buildSandboxTool(deps),
-      buildGitTool(deps, taskId),
+      buildGitTool(deps, taskId, commitBox),
       buildTaskCompleteTool(outcomeBox),
       buildTaskFailedTool(outcomeBox),
     ],

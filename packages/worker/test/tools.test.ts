@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createCommitBox, type CommitBox } from '../src/runner/cadence.js';
 import {
   buildMyceliumServer,
   createTerminalOutcomeBox,
@@ -24,12 +25,14 @@ const TASK_ID = '018f3a5c-0000-7000-8000-0000000000c1';
 
 let h: TestWorker;
 let outcomeBox: TerminalOutcomeBox;
+let commitBox: CommitBox;
 let client: Client;
 
 beforeEach(async () => {
   h = await buildTestWorker();
   outcomeBox = createTerminalOutcomeBox();
-  const server = buildMyceliumServer(h.deps, outcomeBox, TASK_ID);
+  commitBox = createCommitBox();
+  const server = buildMyceliumServer(h.deps, outcomeBox, TASK_ID, commitBox);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -271,6 +274,33 @@ describe('git', () => {
 
     const diff = await call('git', { action: 'diff' });
     expect(diff.isError).toBe(false);
+  });
+
+  it('records a successful commit for the cadence instrument', async () => {
+    expect(commitBox.commits).toBe(0);
+
+    await call('git', { action: 'commit', message: 'Add the health endpoint' });
+
+    // `runner/cadence.ts` counts tool calls since the last commit. It can
+    // only reset if the commit is recorded here, before the tool result that
+    // carries it reaches the runner.
+    expect(commitBox.commits).toBe(1);
+  });
+
+  it('does not record a commit that had nothing to commit', async () => {
+    h.git.nothingToCommit = true;
+
+    await call('git', { action: 'commit', message: 'nothing' });
+
+    expect(commitBox.commits).toBe(0);
+  });
+
+  it('does not record a push, a status, or a diff as a commit', async () => {
+    await call('git', { action: 'push' });
+    await call('git', { action: 'status' });
+    await call('git', { action: 'diff' });
+
+    expect(commitBox.commits).toBe(0);
   });
 
   it('turns a git failure into a tool error the model can react to', async () => {

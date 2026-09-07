@@ -93,11 +93,6 @@ export interface WorkerConfig {
    */
   shutdownGraceMs: number;
 
-  /** Caps on the host-side file tools. Bounded because the results enter a model context. */
-  fileReadMaxBytes: number;
-  fileWriteMaxBytes: number;
-  listFilesMaxEntries: number;
-
   /** Tool calls since the last commit before one warn-only event is emitted. */
   commitCadenceWarnAfter: number;
   /**
@@ -156,10 +151,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     statusRetryLimit: integer(env.STATUS_RETRY_LIMIT, 'STATUS_RETRY_LIMIT', 3, 0),
     statusRetryWindowMs: integer(env.STATUS_RETRY_WINDOW_MS, 'STATUS_RETRY_WINDOW_MS', 30_000, 1),
     shutdownGraceMs: integer(env.SHUTDOWN_GRACE_MS, 'SHUTDOWN_GRACE_MS', 4000, 1),
-
-    fileReadMaxBytes: integer(env.FILE_READ_MAX_BYTES, 'FILE_READ_MAX_BYTES', 256 * 1024, 1),
-    fileWriteMaxBytes: integer(env.FILE_WRITE_MAX_BYTES, 'FILE_WRITE_MAX_BYTES', 1024 * 1024, 1),
-    listFilesMaxEntries: integer(env.LIST_FILES_MAX_ENTRIES, 'LIST_FILES_MAX_ENTRIES', 500, 1),
 
     commitCadenceWarnAfter: integer(
       env.COMMIT_CADENCE_WARN_AFTER,

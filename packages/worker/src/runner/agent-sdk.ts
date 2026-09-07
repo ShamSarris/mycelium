@@ -7,6 +7,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Deps } from '../deps.js';
 import type { TaskDispatch } from '../protocol.js';
+import { createCommitBox, initialCadenceState, noteToolResult } from './cadence.js';
 import { createContainmentHook } from './containment.js';
 import { cumulativeTokens, initialMapperState, mapSdkMessage, type MapperMessage, type MapperState } from './events.js';
 import { openingMessage, systemPrompt } from './prompt.js';
@@ -56,7 +57,13 @@ export class AgentSdkRunner implements TaskRunner {
     const taskId = dispatch.task_id;
 
     const outcomeBox = createTerminalOutcomeBox();
-    const mcpServer = buildMyceliumServer(deps, outcomeBox, taskId);
+    // The commit-cadence instrument (ticket 0004 §9.3), reinstated here after
+    // ticket 14 deleted the host loop that used to own it. The box is written
+    // by the MCP `git` tool; the counter is advanced below, once per tool
+    // result the mapper reports. See `runner/cadence.ts`.
+    const commitBox = createCommitBox();
+    const cadence = initialCadenceState(config.commitCadenceWarnAfter);
+    const mcpServer = buildMyceliumServer(deps, outcomeBox, taskId, commitBox);
     const mapperState = initialMapperState(dispatch.cost_spent_so_far_microusd);
 
     // Bridges the caller's `AbortSignal` into the `AbortController` `Options`
@@ -122,6 +129,13 @@ export class AgentSdkRunner implements TaskRunner {
           const events = mapSdkMessage(message as unknown as MapperMessage, mapperState);
           for (const event of events) {
             await deps.broker.emit({ ...event, taskId });
+
+            // One `agent.tool_call` is mapped per tool result, so this counts
+            // results — including each result of a parallel tool call
+            // separately — which is what the host loop counted too.
+            if (event.type !== 'agent.tool_call') continue;
+            const warning = noteToolResult(cadence, commitBox);
+            if (warning !== null) await deps.broker.emit({ ...warning, taskId });
           }
 
           if (isAssistantMessage(message) && message.message.stop_reason === 'refusal') {
@@ -308,6 +322,12 @@ function buildOptions(
     // keeps all of it, which would mean Mycelium's prompt is an addition to
     // Claude Code's own persona rather than the whole of it.
     systemPrompt: { type: 'custom', prompt: systemPrompt(config) },
+    // `MODEL_EFFORT` (config.ts), defaulting to 'high'. Without this the SDK
+    // applies its own default instead and the operator's setting is inert —
+    // which is exactly what happened between ticket 11 and this change. The
+    // subagent roster's own `effort: 'low'` above stays deliberately
+    // independent of it.
+    effort: config.modelEffort,
     cwd: config.workdir,
     // 01-findings.md Q2, confirmed live: `tools: [...]` restricts the
     // model's own callable set, not a downstream permission check — the

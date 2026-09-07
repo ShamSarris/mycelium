@@ -25,15 +25,30 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 });
 
 let capturedOutcomeBox: { outcome: unknown } | null = null;
+/**
+ * The commit-cadence box the runner hands the MCP `git` tool. Captured for
+ * the same reason as the outcome box above: the real `git` tool is not driven
+ * here, so a test that wants to say "the model committed" writes the commit
+ * into this box directly, exactly as `runner/tools.ts`'s handler would.
+ */
+let capturedCommitBox: { commits: number } | null = null;
 
 vi.mock('../../src/runner/tools.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/runner/tools.js')>();
   return {
     ...actual,
-    buildMyceliumServer: vi.fn((_deps: unknown, outcomeBox: { outcome: unknown }) => {
-      capturedOutcomeBox = outcomeBox;
-      return { __fakeMcpServer: true };
-    }),
+    buildMyceliumServer: vi.fn(
+      (
+        _deps: unknown,
+        outcomeBox: { outcome: unknown },
+        _taskId: string,
+        commitBox: { commits: number },
+      ) => {
+        capturedOutcomeBox = outcomeBox;
+        capturedCommitBox = commitBox;
+        return { __fakeMcpServer: true };
+      },
+    ),
   };
 });
 
@@ -45,6 +60,7 @@ beforeEach(async () => {
   h = await buildTestWorker();
   queryMock.mockReset();
   capturedOutcomeBox = null;
+  capturedCommitBox = null;
 });
 
 afterEach(async () => {
@@ -178,6 +194,19 @@ describe('the isolation settings', () => {
     const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
     expect(options.systemPrompt).toMatchObject({ type: 'custom' });
     expect((options.systemPrompt as { prompt: string }).prompt).toContain(h.config.projectName);
+  });
+
+  it('applies the configured reasoning effort to the main agent', async () => {
+    queryMock.mockImplementation(() => scriptedQuery([{ message: resultMessage() }])());
+
+    const runner = new AgentSdkRunner(h.deps);
+    await runner.run(taskDispatch(), new AbortController().signal);
+
+    const options = (queryMock.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+    // MODEL_EFFORT is loaded and validated by `config.ts` and defaults to
+    // 'high'. Without this line the SDK silently applies its own default
+    // instead, and the operator's setting does nothing at all.
+    expect(options.effort).toBe(h.config.modelEffort);
   });
 
   it('derives maxBudgetUsd from the dispatch cost ceiling', async () => {
@@ -628,5 +657,142 @@ describe('events', () => {
         expect(looksLikeSecretKey(key)).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * A `user` message carrying tool results — how the SDK reports what came back
+ * from a tool call. `n` results in one message is the parallel-tool-call case.
+ */
+function toolResultMessage(count = 1) {
+  return {
+    type: 'user',
+    message: {
+      content: Array.from({ length: count }, (_unused, index) => ({
+        type: 'tool_result',
+        tool_use_id: `toolu_${String(index)}`,
+        is_error: false,
+      })),
+    },
+  };
+}
+
+describe('the commit-cadence instrument', () => {
+  /** The test worker sets COMMIT_CADENCE_WARN_AFTER=2, so three results trip it. */
+  async function runWith(steps: unknown[], onStart?: () => void) {
+    queryMock.mockImplementation(() =>
+      scriptedQuery(steps.map((message) => ({ message })))(),
+    );
+    const runner = new AgentSdkRunner(h.deps);
+    const runPromise = runner.run(taskDispatch(), new AbortController().signal);
+    onStart?.();
+    capturedOutcomeBox!.outcome = { kind: 'complete', summary: 'done' };
+    await runPromise;
+    return h.broker
+      .ofType('limit.exceeded')
+      .filter((event) => (event.payload as { limit?: string }).limit === 'commit_cadence');
+  }
+
+  beforeEach(async () => {
+    await h.close();
+    h = await buildTestWorker({ COMMIT_CADENCE_WARN_AFTER: '2' });
+  });
+
+  it('stays silent while the agent is committing often enough', async () => {
+    const warnings = await runWith([toolResultMessage(), toolResultMessage(), resultMessage()]);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('emits one warn-only event once tool calls since the last commit pass the threshold', async () => {
+    const warnings = await runWith([
+      toolResultMessage(),
+      toolResultMessage(),
+      toolResultMessage(),
+      resultMessage(),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.severity).toBe('warn');
+    expect(warnings[0]?.payload).toMatchObject({
+      limit: 'commit_cadence',
+      allowed: 2,
+      calls_since_commit: 3,
+      // It measures; it does not enforce. A hard block on a guessed
+      // threshold can deadlock a legitimately long edit-then-test loop.
+      enforced: false,
+    });
+  });
+
+  it('attributes the warning to the task that produced it', async () => {
+    queryMock.mockImplementation(() =>
+      scriptedQuery(
+        [toolResultMessage(), toolResultMessage(), toolResultMessage(), resultMessage()].map(
+          (message) => ({ message }),
+        ),
+      )(),
+    );
+
+    const runner = new AgentSdkRunner(h.deps);
+    const dispatch = taskDispatch();
+    const runPromise = runner.run(dispatch, new AbortController().signal);
+    capturedOutcomeBox!.outcome = { kind: 'complete', summary: 'done' };
+    await runPromise;
+
+    const warning = h.broker
+      .ofType('limit.exceeded')
+      .find((event) => (event.payload as { limit?: string }).limit === 'commit_cadence');
+    expect(warning?.taskId).toBe(dispatch.task_id);
+  });
+
+  it('counts every result in a parallel tool call, not the message', async () => {
+    const warnings = await runWith([toolResultMessage(3), resultMessage()]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.payload).toMatchObject({ calls_since_commit: 3 });
+  });
+
+  it('warns at most once for the whole task', async () => {
+    const warnings = await runWith([
+      toolResultMessage(),
+      toolResultMessage(),
+      toolResultMessage(),
+      toolResultMessage(),
+      toolResultMessage(),
+      resultMessage(),
+    ]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('is reset by a commit the git tool records', async () => {
+    // Exactly the three results that warn in the test above. The only
+    // difference is the commit, so this isolates the reset itself: the first
+    // result observes it and lands on zero, leaving two counted calls — at
+    // the threshold, not past it.
+    queryMock.mockImplementation(() =>
+      scriptedQuery([
+        { message: toolResultMessage() },
+        { message: toolResultMessage() },
+        { message: toolResultMessage() },
+        { message: resultMessage() },
+      ])(),
+    );
+
+    const runner = new AgentSdkRunner(h.deps);
+    const runPromise = runner.run(taskDispatch(), new AbortController().signal);
+    // The `git` tool's handler records the commit before its own tool_result
+    // reaches the runner; recording it here as soon as the box exists stands
+    // in for that, and the third result observes the reset.
+    capturedCommitBox!.commits += 1;
+    capturedOutcomeBox!.outcome = { kind: 'complete', summary: 'done' };
+    await runPromise;
+
+    const warnings = h.broker
+      .ofType('limit.exceeded')
+      .filter((event) => (event.payload as { limit?: string }).limit === 'commit_cadence');
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('gives the git tool a commit box to record into', async () => {
+    await runWith([resultMessage()]);
+    expect(capturedCommitBox).toEqual({ commits: 0 });
   });
 });

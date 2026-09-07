@@ -9,9 +9,10 @@ import { MAX_REQUEST_BYTES, socketAddress } from './socket.js';
  * gap 9). The supervisor dials it to hand over a task, and restart
  * re-attachment dials it to ask whether anything here is still alive.
  *
- * One task at a time. `max_concurrent_agents` is carried and reported but
- * unused until sub-agents exist, and refusing loudly is the right answer
- * meanwhile: the supervisor turns a refusal into a 409 and the orchestrator
+ * One task at a time, and refusing loudly is the right answer: parallelism
+ * within a task is the Agent SDK's subagents (ticket 13), bounded by a
+ * ceiling the supervisor derives from the VM's memory rather than by anything
+ * the dispatch carries. The supervisor turns a refusal into a 409 and the orchestrator
  * returns the task to `ready` immediately, where accepting quietly would cost
  * it the whole lease before anything happened.
  */
