@@ -13,7 +13,12 @@ import type {
   SandboxSpec,
 } from '../../src/drivers/container.js';
 import { CloneError, type CloneSpec, type GitClient } from '../../src/drivers/git.js';
-import type { AgentHandle, AgentRunner, AgentSpec } from '../../src/drivers/process.js';
+import type {
+  AgentHandle,
+  AgentRunner,
+  AgentSpec,
+  DispatchOutcome,
+} from '../../src/drivers/process.js';
 import type { EmittedEvent, EventSink } from '../../src/events/sink.js';
 import type { Broker } from '../../src/rpc/broker.js';
 import type { ProxyListener } from '../../src/proxy/connect.js';
@@ -69,15 +74,33 @@ export class FakeAgentHandle implements AgentHandle {
   readonly dispatches: unknown[] = [];
   readonly signals: string[] = [];
   accepting = true;
+  /** The agent answers with an RPC error, the way a malformed dispatch is met. */
+  refuseWith: { code: string; message: string } | null = null;
+  /** Nothing answers on the socket at all. */
+  unreachable = false;
   /** An agent that ignores SIGTERM, so the SIGKILL path can be tested. */
   ignoresSigterm = false;
   private exited = false;
 
   constructor(readonly planId: string) {}
 
-  async dispatch(task: unknown): Promise<boolean> {
+  async dispatch(task: unknown): Promise<DispatchOutcome> {
     this.dispatches.push(task);
-    return this.accepting;
+
+    if (this.unreachable) {
+      return { accepted: false, reason: 'the agent could not be reached', unreachable: true };
+    }
+    if (this.refuseWith !== null) {
+      return {
+        accepted: false,
+        reason: `${this.refuseWith.code}: ${this.refuseWith.message}`,
+        unreachable: false,
+      };
+    }
+    if (!this.accepting) {
+      return { accepted: false, reason: 'the agent is not accepting work', unreachable: false };
+    }
+    return { accepted: true };
   }
 
   async signal(signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {

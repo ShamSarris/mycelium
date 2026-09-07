@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requirePeer } from '../auth/peer.js';
 import type { Deps } from '../deps.js';
 import { HttpError } from '../errors.js';
+import type { DispatchOutcome } from '../drivers/process.js';
 import { dispatchPlan } from '../environments/provision.js';
 import { teardown, type TeardownReason } from '../environments/teardown.js';
 
@@ -40,16 +41,27 @@ export function registerOrchestratorRoutes(app: FastifyInstance, deps: Deps): vo
       // Refuse loudly rather than accept quietly. The orchestrator returns the
       // task to ready at once on a refusal; a silent acceptance would cost it
       // the full lease before anything happened.
-      let accepted: boolean;
+      //
+      // Loudly means *with the reason*. A rejected dispatch is redispatched
+      // roughly every two seconds until the plan's TTL, so a refusal with no
+      // cause attached produces hundreds of identical `supervisor_rejected`
+      // events and no way to tell which of four paths produced them. The
+      // agent's own error is the diagnosis; it goes to the log and into the
+      // 409 body, which is what the orchestrator records against the task.
+      let outcome: DispatchOutcome;
       try {
-        accepted = await environment.agent.dispatch(request.body);
+        outcome = await environment.agent.dispatch(request.body);
       } catch (error) {
         request.log.warn({ err: error, planId: id }, 'could not reach the plan agent');
         throw HttpError.conflict('agent_not_accepting', 'the plan agent could not be reached');
       }
 
-      if (!accepted) {
-        throw HttpError.conflict('agent_not_accepting', 'the plan agent refused the task');
+      if (!outcome.accepted) {
+        request.log.warn(
+          { planId: id, reason: outcome.reason, unreachable: outcome.unreachable },
+          'the plan agent did not accept the task',
+        );
+        throw HttpError.conflict('agent_not_accepting', outcome.reason);
       }
 
       return reply.code(202).send({ accepted: true });

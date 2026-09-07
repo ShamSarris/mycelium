@@ -215,6 +215,27 @@ describe('claiming and dispatching', () => {
     const running = await runningPlan(h, singleTaskPlan());
     expect(await taskState(h, running.taskIds['only'] as string)).toBe('ready');
   });
+
+  /**
+   * A rejected dispatch is redispatched every couple of seconds until the
+   * plan's TTL, so this event is written hundreds of times. Without the
+   * supervisor's own reason on it, all of those rows say `supervisor_rejected`
+   * and the operator has no way to tell a malformed dispatch from a busy
+   * agent from a plan the node is not running — which is exactly the hole a
+   * real stalled plan fell into.
+   */
+  it('records the reason the supervisor gave for refusing', async () => {
+    h.supervisors.taskAccepted = false;
+    h.supervisors.taskRejectionReason = 'invalid_params: that is not a task dispatch';
+    const running = await runningPlan(h, singleTaskPlan());
+
+    const events = await h.deps.pool.query<{ payload: { reason?: string } }>(
+      "SELECT payload FROM events WHERE plan_id = $1 AND type = 'task.state_changed'",
+      [running.planId],
+    );
+    const reasons = events.rows.map((row) => row.payload.reason ?? '');
+    expect(reasons.some((reason) => reason.includes('invalid_params'))).toBe(true);
+  });
 });
 
 describe('acknowledgement and completion', () => {

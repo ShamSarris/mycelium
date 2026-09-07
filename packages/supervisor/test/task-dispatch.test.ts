@@ -80,6 +80,52 @@ describe('POST /plans/:id/tasks', () => {
     expect(response.statusCode).toBe(409);
   });
 
+  /**
+   * The agent answers a malformed dispatch with an RPC error naming the
+   * reason (`invalid_params`, `wrong_plan`), and that reason is the entire
+   * diagnosis of a plan that will otherwise redispatch on a two-second loop
+   * until its TTL. It used to be discarded: `call()` collapsed every
+   * non-`ok` envelope to null and the route logged nothing on this path, so
+   * the operator saw forty identical `supervisor_rejected` events and no
+   * cause anywhere. It has to reach both the log and the 409 body.
+   */
+  it('reports the reason the agent gave, rather than a bare refusal', async () => {
+    agent.refuseWith = { code: 'invalid_params', message: 'that is not a task dispatch' };
+    const response = await send();
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('agent_not_accepting');
+    expect(response.json().message).toContain('invalid_params');
+    expect(response.json().message).toContain('that is not a task dispatch');
+  });
+
+  it('distinguishes an agent that refused from one it could not reach', async () => {
+    agent.refuseWith = { code: 'wrong_plan', message: 'this agent is not running that plan' };
+    const refused = await send();
+    expect(refused.json().message).toContain('wrong_plan');
+
+    agent.unreachable = true;
+    const unreachable = await send();
+    expect(unreachable.json().message).not.toContain('wrong_plan');
+    expect(unreachable.json().message).toMatch(/could not be reached|unreachable/i);
+  });
+
+  /**
+   * A refusal is the agent answering. Treating it as death is what turned one
+   * real diagnosis into a run of misleading "the plan agent has exited"
+   * replies on every later attempt — only `AdoptedAgent` did this, so it
+   * needed a supervisor restart to show, but the agent was alive throughout.
+   */
+  it('does not mark a live agent as exited because it refused a task', async () => {
+    agent.refuseWith = { code: 'invalid_params', message: 'that is not a task dispatch' };
+    await send();
+
+    expect(agent.hasExited()).toBe(false);
+
+    const second = await send();
+    expect(second.json().message).toContain('invalid_params');
+  });
+
   it('reports a broken agent socket rather than hanging', async () => {
     agent.dispatch = async () => {
       throw new Error('ECONNREFUSED on the dispatch socket');

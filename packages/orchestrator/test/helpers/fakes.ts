@@ -107,6 +107,8 @@ export class FakeSupervisorClient implements SupervisorClient {
   defaultPlanResponse: PlanDispatchResult = { accepted: true };
 
   taskAccepted = true;
+  /** What a refusing supervisor says, as the 409 body's message. */
+  taskRejectionReason: string | undefined = undefined;
   taskThrows = false;
   teardownThrows = false;
 
@@ -115,10 +117,16 @@ export class FakeSupervisorClient implements SupervisorClient {
     return this.planResponses.get(agent.id) ?? this.defaultPlanResponse;
   }
 
-  async dispatchTask(agent: AgentTarget, request: TaskDispatch): Promise<{ accepted: boolean }> {
+  async dispatchTask(
+    agent: AgentTarget,
+    request: TaskDispatch,
+  ): Promise<{ accepted: boolean; reason?: string }> {
     if (this.taskThrows) throw new Error('fake supervisor is unreachable');
     this.taskDispatches.push({ agentId: agent.id, request });
-    return { accepted: this.taskAccepted };
+    if (this.taskAccepted) return { accepted: true };
+    return this.taskRejectionReason === undefined
+      ? { accepted: false }
+      : { accepted: false, reason: this.taskRejectionReason };
   }
 
   async authorizeTeardown(

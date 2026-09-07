@@ -16,14 +16,24 @@ export interface AgentSpec {
   dispatchSocket: string;
 }
 
+export type DispatchOutcome =
+  | { accepted: true }
+  | { accepted: false; reason: string; unreachable: boolean };
+
 export interface AgentHandle {
   readonly planId: string;
   /**
-   * Delivers one task dispatch. False means the agent is not accepting, which
-   * the route turns into a 409 — the orchestrator returns the task to ready at
-   * once rather than waiting out its lease.
+   * Delivers one task dispatch. Anything but `accepted` becomes a 409, which
+   * the orchestrator turns into an immediate return to `ready` rather than
+   * waiting out the lease.
+   *
+   * The refusal carries the agent's own reason. That reason is the whole
+   * diagnosis of a plan that would otherwise redispatch every two seconds
+   * until its TTL, and it used to be discarded before any caller saw it.
+   * `unreachable` separates "the agent answered, and said no" from "nothing
+   * answered" — only the second is evidence the agent is gone.
    */
-  dispatch(task: unknown): Promise<boolean>;
+  dispatch(task: unknown): Promise<DispatchOutcome>;
   /** Signals the whole process group, so a shell child cannot outlive its parent. */
   signal(signal: 'SIGTERM' | 'SIGKILL'): Promise<void>;
   hasExited(): boolean;

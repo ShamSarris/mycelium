@@ -54,7 +54,16 @@ export type PlanDispatchResult =
 
 export interface SupervisorClient {
   dispatchPlan(agent: AgentTarget, req: PlanDispatch): Promise<PlanDispatchResult>;
-  dispatchTask(agent: AgentTarget, req: TaskDispatch): Promise<{ accepted: boolean }>;
+  /**
+   * `reason` is the supervisor's own description of a refusal, and the only
+   * thing that distinguishes one rejected dispatch from another: the task is
+   * redispatched every couple of seconds until the plan's TTL, so without it
+   * the operator reads hundreds of identical `supervisor_rejected` rows.
+   */
+  dispatchTask(
+    agent: AgentTarget,
+    req: TaskDispatch,
+  ): Promise<{ accepted: boolean; reason?: string }>;
   authorizeTeardown(agent: AgentTarget, planId: string, reason: TeardownReason): Promise<void>;
 }
 
@@ -96,9 +105,22 @@ export class HttpSupervisorClient implements SupervisorClient {
     return { accepted: false, code, retryable: code !== 'validation_failed' };
   }
 
-  async dispatchTask(agent: AgentTarget, req: TaskDispatch): Promise<{ accepted: boolean }> {
+  async dispatchTask(
+    agent: AgentTarget,
+    req: TaskDispatch,
+  ): Promise<{ accepted: boolean; reason?: string }> {
     const response = await this.post(agent, `/plans/${req.plan_id}/tasks`, req);
-    return { accepted: response.ok };
+    if (response.ok) return { accepted: true };
+
+    try {
+      const body = (await response.json()) as { code?: string; message?: string };
+      const reason = [body.code, body.message].filter((part) => part !== undefined).join(': ');
+      if (reason !== '') return { accepted: false, reason };
+    } catch {
+      // A supervisor that cannot explain itself still refused the task.
+    }
+
+    return { accepted: false };
   }
 
   async authorizeTeardown(

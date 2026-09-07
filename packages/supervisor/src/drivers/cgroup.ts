@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import net from 'node:net';
-import type { AgentHandle, AgentRunner, AgentSpec } from './process.js';
+import type { AgentHandle, AgentRunner, AgentSpec, DispatchOutcome } from './process.js';
 import { listenAddress } from '../rpc/broker.js';
 
 export interface RunnerOptions {
@@ -67,10 +67,10 @@ export class CgroupAgentRunner implements AgentRunner {
    * plan that looks alive and answers nothing.
    */
   async probe(planId: string, dispatchSocket: string): Promise<AgentHandle | null> {
-    const result = (await call(dispatchSocket, { method: 'agent.ping' }, 500)) as {
-      plan_id?: unknown;
-    } | null;
+    const outcome = await call(dispatchSocket, { method: 'agent.ping' }, 500);
+    if (outcome.kind !== 'ok') return null;
 
+    const result = outcome.result as { plan_id?: unknown } | null;
     if (result === null || result.plan_id !== planId) return null;
 
     return new AdoptedAgent(planId, dispatchSocket, (id, signal) => this.signalScope(id, signal));
@@ -153,10 +153,10 @@ class SpawnedAgent implements AgentHandle {
    * pushing down the broker socket it serves. Two sockets, each with one
    * direction, is easier to reason about than one multiplexed both ways.
    */
-  dispatch(task: unknown): Promise<boolean> {
-    return call(this.dispatchSocket, { method: 'task.dispatch', params: task }).then(
-      (result) => (result as { accepted?: boolean } | null)?.accepted === true,
-    );
+  async dispatch(task: unknown): Promise<DispatchOutcome> {
+    // No `exited` bookkeeping here: this handle learns of death from the
+    // child's own 'exit' event, which is more trustworthy than a socket read.
+    return toOutcome(await call(this.dispatchSocket, { method: 'task.dispatch', params: task }));
   }
 
   async signal(signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {
@@ -187,15 +187,17 @@ class AdoptedAgent implements AgentHandle {
     private readonly killScope: (planId: string, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>,
   ) {}
 
-  async dispatch(task: unknown): Promise<boolean> {
-    const result = await call(this.dispatchSocket, { method: 'task.dispatch', params: task });
-    if (result === null) {
-      // The socket is the only thing holding this handle together. Losing it
-      // means the agent is gone, whatever the process table says.
-      this.exited = true;
-      return false;
-    }
-    return (result as { accepted?: boolean }).accepted === true;
+  async dispatch(task: unknown): Promise<DispatchOutcome> {
+    const outcome = toOutcome(
+      await call(this.dispatchSocket, { method: 'task.dispatch', params: task }),
+    );
+    // The socket is the only thing holding this handle together, so losing it
+    // means the agent is gone whatever the process table says. An agent that
+    // *answered* with a refusal is emphatically not that: treating the two
+    // alike marked live agents dead and turned every later dispatch into a
+    // misleading "the plan agent has exited".
+    if (!outcome.accepted && outcome.unreachable) this.exited = true;
+    return outcome;
   }
 
   async signal(signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {
@@ -210,12 +212,38 @@ class AdoptedAgent implements AgentHandle {
 }
 
 /**
- * One request per connection, one JSON answer, close — the agent's half of the
- * protocol the broker already speaks. Returns the envelope's `result` on
- * success and null on anything else, so every caller treats a refusal and an
- * unreachable agent the same way.
+ * What one `call` came back with. A refusal and an unreachable agent were
+ * deliberately indistinguishable here once, which cost the operator the only
+ * description of why a dispatch failed; they are now separate, and the
+ * agent's own `code`/`message` travels with the refusal.
  */
-function call(socketPath: string, request: unknown, timeoutMs = 5000): Promise<unknown> {
+type CallOutcome =
+  | { kind: 'ok'; result: unknown }
+  | { kind: 'refused'; code: string; message: string }
+  | { kind: 'unreachable'; reason: string };
+
+/** Turns one `call` into the answer `AgentHandle.dispatch` owes its caller. */
+function toOutcome(outcome: CallOutcome): DispatchOutcome {
+  if (outcome.kind === 'ok') {
+    if ((outcome.result as { accepted?: boolean } | null)?.accepted === true) {
+      return { accepted: true };
+    }
+    // A well-formed answer that simply declines: the agent is busy or closing.
+    return { accepted: false, reason: 'the agent is not accepting work', unreachable: false };
+  }
+
+  if (outcome.kind === 'refused') {
+    return { accepted: false, reason: `${outcome.code}: ${outcome.message}`, unreachable: false };
+  }
+
+  return { accepted: false, reason: outcome.reason, unreachable: true };
+}
+
+/**
+ * One request per connection, one JSON answer, close — the agent's half of the
+ * protocol the broker already speaks.
+ */
+function call(socketPath: string, request: unknown, timeoutMs = 5000): Promise<CallOutcome> {
   return new Promise((resolve) => {
     const socket = net.createConnection(listenAddress(socketPath), () => {
       socket.end(`${JSON.stringify(request)}\n`);
@@ -225,18 +253,35 @@ function call(socketPath: string, request: unknown, timeoutMs = 5000): Promise<u
     socket.on('data', (chunk: Buffer) => {
       response += chunk.toString('utf8');
     });
-    socket.on('error', () => resolve(null));
+    socket.on('error', (error: Error) => {
+      resolve({ kind: 'unreachable', reason: `the agent could not be reached: ${error.message}` });
+    });
     socket.setTimeout(timeoutMs, () => {
       socket.destroy();
-      resolve(null);
+      resolve({
+        kind: 'unreachable',
+        reason: `the agent did not answer within ${String(timeoutMs)}ms`,
+      });
     });
     socket.on('close', () => {
+      let parsed: { ok?: boolean; result?: unknown; error?: { code?: string; message?: string } };
       try {
-        const parsed = JSON.parse(response) as { ok?: boolean; result?: unknown };
-        resolve(parsed.ok === true ? (parsed.result ?? null) : null);
+        parsed = JSON.parse(response) as typeof parsed;
       } catch {
-        resolve(null);
+        resolve({ kind: 'unreachable', reason: 'the agent sent an answer that was not JSON' });
+        return;
       }
+
+      if (parsed.ok === true) {
+        resolve({ kind: 'ok', result: parsed.result ?? null });
+        return;
+      }
+
+      resolve({
+        kind: 'refused',
+        code: parsed.error?.code ?? 'unknown',
+        message: parsed.error?.message ?? 'the agent gave no reason',
+      });
     });
   });
 }

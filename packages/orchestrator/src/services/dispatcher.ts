@@ -505,9 +505,18 @@ async function sendTask(
   };
 
   try {
-    const { accepted } = await deps.supervisors.dispatchTask(agent, request);
+    const { accepted, reason } = await deps.supervisors.dispatchTask(agent, request);
     if (accepted) return true;
-    await returnTaskToReady(deps, plan, task, 'supervisor_rejected');
+    // The supervisor's reason when it gave one. This lands in the task's own
+    // event timeline, which is where an operator looks first when a plan
+    // stalls, and a bare `supervisor_rejected` there names none of the four
+    // paths that produce it.
+    await returnTaskToReady(
+      deps,
+      plan,
+      task,
+      reason === undefined ? 'supervisor_rejected' : `supervisor_rejected: ${reason}`,
+    );
     return false;
   } catch (error) {
     // Do not wait out the lease: the failure is already known.
