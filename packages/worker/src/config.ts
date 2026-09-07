@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 /**
  * Configuration comes from the environment behind this one function, exactly as
  * it does in the orchestrator and the supervisor. The difference here is that
@@ -16,6 +18,17 @@
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type ModelEffort = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * Ticket 11 §6.2: which `TaskRunner` this process uses. `host` keeps the
+ * existing host-owned loop (`runner/host-loop.ts`); `agent-sdk` is ticket 11's
+ * Agent SDK runner. Defaults to `host` until ticket 14 deletes the host loop
+ * and flips the default — an untested default flip would silently move every
+ * existing deployment onto the new runner the day this ticket merges.
+ */
+const TASK_RUNNERS = ['host', 'agent-sdk'] as const;
+
+export type TaskRunnerKind = (typeof TASK_RUNNERS)[number];
 
 /**
  * Exported so the config tests can assert on the whole set rather than a
@@ -59,6 +72,20 @@ export interface WorkerConfig {
   /** `plan/<id>`. The only branch this agent may push. */
   branch: string;
 
+  taskRunner: TaskRunnerKind;
+  /**
+   * Per-plan directory for the Agent SDK's own Claude Code state (sessions,
+   * auto-memory files it might otherwise consult, connector config). Ticket
+   * 11 §3: isolation is mandatory, and `settingSources: []` alone does not
+   * suppress auto-memory or claude.ai connectors — this env var is one of
+   * the four settings that do, alongside `persistSession: false`,
+   * `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, and `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
+   * Defaults outside the checkout (a sibling of `workdir`, never inside it),
+   * per-plan, so the VM's real `~/.claude` never influences an
+   * operator-approved plan even before ticket 15 (infra) injects a real one.
+   */
+  claudeConfigDir: string;
+
   modelId: string;
   modelEffort: ModelEffort;
   modelMaxTokens: number;
@@ -92,8 +119,19 @@ export interface WorkerConfig {
 
   /** Tool calls since the last commit before one warn-only event is emitted. */
   commitCadenceWarnAfter: number;
-  /** Read and reported; unused until sub-agents exist (ticket 0004 section 3). */
-  maxConcurrentAgents: number;
+  /**
+   * Ticket 13: how many Agent SDK subagents this plan's `query()` may run
+   * concurrently, passed straight through to `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`
+   * (`runner/agent-sdk.ts`). Deliberately NOT read from the plan — the
+   * operator has no visibility into the VM's memory, only the supervisor
+   * does (it sets the `systemd-run --scope` `MemoryMax` this is derived
+   * from). The supervisor computes the value with
+   * `deriveMaxConcurrentSubagents` (`packages/supervisor/src/domain/concurrency.ts`)
+   * and injects it as `MAX_CONCURRENT_SUBAGENTS`; the fallback below only
+   * matters when nothing injects it (local dev, or a test), and mirrors
+   * that function's own conservative default for an unbounded scope.
+   */
+  maxConcurrentSubagents: number;
 
   credentials: Credentials;
 }
@@ -113,6 +151,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     dispatchSocket: required(env.DISPATCH_SOCKET, 'DISPATCH_SOCKET'),
     workdir: required(env.WORKDIR, 'WORKDIR'),
     branch: required(env.GITEA_BRANCH, 'GITEA_BRANCH'),
+
+    taskRunner: taskRunner(env.TASK_RUNNER),
+    claudeConfigDir:
+      env.CLAUDE_CONFIG_DIR?.trim() ||
+      path.join(path.dirname(required(env.WORKDIR, 'WORKDIR')), 'claude-config'),
 
     modelId: env.MODEL_ID?.trim() || 'claude-opus-5',
     modelEffort: effort(env.MODEL_EFFORT),
@@ -146,7 +189,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       25,
       1,
     ),
-    maxConcurrentAgents: integer(env.MAX_CONCURRENT_AGENTS, 'MAX_CONCURRENT_AGENTS', 2, 1),
+    maxConcurrentSubagents: integer(
+      env.MAX_CONCURRENT_SUBAGENTS,
+      'MAX_CONCURRENT_SUBAGENTS',
+      2,
+      1,
+    ),
 
     credentials: {
       orchestratorToken: required(env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN'),
@@ -161,6 +209,15 @@ function required(value: string | undefined, name: string): string {
     throw new Error(`${name} is required`);
   }
   return value.trim();
+}
+
+function taskRunner(value: string | undefined): TaskRunnerKind {
+  const candidate = value?.trim();
+  if (candidate === undefined || candidate === '') return 'host';
+  if (!(TASK_RUNNERS as readonly string[]).includes(candidate)) {
+    throw new Error(`TASK_RUNNER must be one of ${TASK_RUNNERS.join(', ')}, got ${candidate}`);
+  }
+  return candidate as TaskRunnerKind;
 }
 
 function effort(value: string | undefined): ModelEffort {

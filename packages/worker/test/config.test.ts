@@ -23,7 +23,7 @@ function injectedEnv(overrides: Record<string, string | undefined> = {}) {
     AGENT_SOCKET: '/srv/plan/run/broker.sock',
     DISPATCH_SOCKET: '/srv/plan/run/dispatch.sock',
     WORKDIR: '/srv/plan/repo',
-    MAX_CONCURRENT_AGENTS: '2',
+    MAX_CONCURRENT_SUBAGENTS: '2',
     ...overrides,
   } as NodeJS.ProcessEnv;
 }
@@ -39,7 +39,7 @@ describe('loadConfig', () => {
     expect(config.dispatchSocket).toBe('/srv/plan/run/dispatch.sock');
     expect(config.workdir).toBe('/srv/plan/repo');
     expect(config.branch).toBe('plan/11111111-1111-4111-8111-111111111111');
-    expect(config.maxConcurrentAgents).toBe(2);
+    expect(config.maxConcurrentSubagents).toBe(2);
   });
 
   it('trims the orchestrator URL of its trailing slash, as the supervisor does', () => {
@@ -91,7 +91,40 @@ describe('loadConfig', () => {
     expect(config.fileReadMaxBytes).toBe(256 * 1024);
     expect(config.fileWriteMaxBytes).toBe(1024 * 1024);
     expect(config.listFilesMaxEntries).toBe(500);
-    expect(config.maxConcurrentAgents).toBe(2);
+    expect(config.maxConcurrentSubagents).toBe(2);
+  });
+
+  it('overrides maxConcurrentSubagents from the supervisor-injected env var, not the plan', () => {
+    const config = loadConfig(injectedEnv({ MAX_CONCURRENT_SUBAGENTS: '7' }));
+    expect(config.maxConcurrentSubagents).toBe(7);
+  });
+
+  it('defaults to the host-owned loop until ticket 14 flips the default', () => {
+    const config = loadConfig(injectedEnv());
+    expect(config.taskRunner).toBe('host');
+  });
+
+  it('selects the agent-sdk runner from TASK_RUNNER', () => {
+    const config = loadConfig(injectedEnv({ TASK_RUNNER: 'agent-sdk' }));
+    expect(config.taskRunner).toBe('agent-sdk');
+  });
+
+  it('rejects a TASK_RUNNER value that is neither host nor agent-sdk', () => {
+    expect(() => loadConfig(injectedEnv({ TASK_RUNNER: 'host-loop' }))).toThrow('TASK_RUNNER');
+  });
+
+  it('defaults claudeConfigDir to a per-plan directory outside the checkout', () => {
+    const config = loadConfig(injectedEnv());
+    // Outside the checkout (WORKDIR), and derived from it rather than shared
+    // across plans, since the isolation this backs (agent-sdk.ts §3) must
+    // never let one plan's Claude Code state influence another's.
+    expect(config.claudeConfigDir).not.toBe(config.workdir);
+    expect(config.claudeConfigDir.startsWith(config.workdir)).toBe(false);
+  });
+
+  it('overrides claudeConfigDir from the environment', () => {
+    const config = loadConfig(injectedEnv({ CLAUDE_CONFIG_DIR: '/srv/plan/claude-config' }));
+    expect(config.claudeConfigDir).toBe('/srv/plan/claude-config');
   });
 
   it('overrides the defaults from the environment', () => {
