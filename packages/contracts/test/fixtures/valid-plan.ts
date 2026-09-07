@@ -5,17 +5,18 @@ export function validPlan(): Record<string, any> {
     project: { name: 'mycelium' },
     assumptions: ['The orchestrator already has a Fastify instance.'],
     env: 'dev',
+    max_cost_microusd: 2_000_000,
     tasks: [
       {
         id: 'write-tests',
         description: 'Write failing tests for GET /healthz.',
-        limits: { tokens: 50000, wall_clock_min: 20 },
+        limits: { cost_microusd: 500_000, wall_clock_min: 20 },
       },
       {
         id: 'implement',
         description: 'Implement GET /healthz until the tests pass.',
         depends_on: ['write-tests'],
-        limits: { tokens: 100000, wall_clock_min: 30 },
+        limits: { cost_microusd: 1_000_000, wall_clock_min: 30 },
         failure_policy: { type: 'retry', max_attempts: 2 },
       },
     ],

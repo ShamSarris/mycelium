@@ -77,10 +77,9 @@ export interface Plan {
    */
   egress?: EgressHost[];
   /**
-   * Ceiling on the tokens this whole plan may spend, across every task and every execution attempt. Omitted means the sum of the task ceilings, which is what the plan already implies; naming it is how you ask for less. The orchestrator halts the plan rather than dispatching a task that would cross it.
+   * Ceiling on what this whole plan may cost, in millionths of a US dollar, across every task and every execution attempt. Required: unlike a token ceiling it cannot be inferred from the tasks, because nothing here holds a price table. The orchestrator halts the plan rather than dispatching a task that would cross it.
    */
-  max_tokens?: number;
-  max_concurrent_agents?: number;
+  max_cost_microusd: number;
   /**
    * Wall-clock lifetime of the plan environment before the supervisor tears it down.
    */
@@ -107,6 +106,9 @@ export interface Task {
       };
 }
 export interface Limits {
-  tokens: number;
+  /**
+   * Ceiling on what this task may cost, in millionths of a US dollar, task-wide across every execution attempt. Enforced by the agent as the SDK's per-run budget. The maximum ($5.00) is a sizing convenience derived from published Opus 5 rates for a roughly 500k-token task, not a hard economic claim.
+   */
+  cost_microusd: number;
   wall_clock_min: number;
 }

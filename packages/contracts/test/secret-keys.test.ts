@@ -130,6 +130,23 @@ describe('looksLikeSecretKey', () => {
     }
   });
 
+  // D30's cost-denominated budget fields. `cost_microusd` splits to `cost` +
+  // `microusd`; neither word is in SECRET_WORDS and no SECRET_PAIRS entry
+  // matches either, so these must all pass through unfiltered.
+  const COST_KEYS = [
+    'cost_microusd',
+    'cost_spent_microusd',
+    'max_cost_microusd',
+    'cost_this_attempt_microusd',
+    'total_cost_usd',
+  ];
+
+  for (const key of COST_KEYS) {
+    it(`allows ${key}, the cost-denominated budget field`, () => {
+      expect(looksLikeSecretKey(key)).toBe(false);
+    });
+  }
+
   it('treats a plural token count as a count, not a credential', () => {
     // The distinction the whole fix rests on: `token` is a thing you
     // authenticate with, `tokens` is a number you spent.

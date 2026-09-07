@@ -34,7 +34,6 @@ describe('validatePlan - defaults', () => {
     if (!result.ok) throw new Error('expected valid');
     const plan = result.value;
 
-    expect(plan.max_concurrent_agents).toBe(2);
     expect(plan.env_ttl_min).toBe(240);
     expect(plan.non_goals).toEqual([]);
     expect(plan.tasks[0]!.depends_on).toEqual([]);
@@ -63,15 +62,15 @@ describe('validatePlan - approval gate requirements (G2)', () => {
 });
 
 describe('validatePlan - per-task limits', () => {
-  it('rejects tokens above 500k', () => {
+  it('rejects cost_microusd above 5,000,000', () => {
     const plan = validPlan();
-    plan.tasks[0].limits.tokens = 500_001;
+    plan.tasks[0].limits.cost_microusd = 5_000_001;
     expect(codes(plan)).toContain('maximum');
   });
 
-  it('accepts tokens exactly at 500k', () => {
+  it('accepts cost_microusd exactly at 5,000,000', () => {
     const plan = validPlan();
-    plan.tasks[0].limits.tokens = 500_000;
+    plan.tasks[0].limits.cost_microusd = 5_000_000;
     expect(validatePlan(plan).ok).toBe(true);
   });
 
@@ -88,17 +87,20 @@ describe('validatePlan - per-task limits', () => {
   });
 });
 
-describe('validatePlan - concurrency', () => {
-  it('rejects max_concurrent_agents above 4', () => {
+describe('validatePlan - cost budget', () => {
+  it('rejects a plan missing max_cost_microusd', () => {
     const plan = validPlan();
-    plan.max_concurrent_agents = 5;
-    expect(codes(plan)).toContain('maximum');
+    delete plan.max_cost_microusd;
+    expect(codes(plan)).toContain('required');
   });
 
-  it('rejects max_concurrent_agents below 1', () => {
+  it('rejects a plan carrying max_concurrent_agents', () => {
+    // The SDK enforces subagent concurrency; the supervisor derives the
+    // number from the VM's MemoryMax. The field no longer exists in the
+    // schema, so this is refused the same way any unknown field is.
     const plan = validPlan();
-    plan.max_concurrent_agents = 0;
-    expect(codes(plan)).toContain('minimum');
+    plan.max_concurrent_agents = 2;
+    expect(codes(plan)).toContain('additionalProperties');
   });
 });
 
@@ -124,7 +126,7 @@ describe('validatePlan - task DAG', () => {
 
   it('rejects a three-node cycle', () => {
     const plan = validPlan();
-    const limits = { tokens: 1000, wall_clock_min: 5 };
+    const limits = { cost_microusd: 100_000, wall_clock_min: 5 };
     plan.tasks = [
       { id: 'a', description: 'a', depends_on: ['c'], limits },
       { id: 'b', description: 'b', depends_on: ['a'], limits },
@@ -135,7 +137,7 @@ describe('validatePlan - task DAG', () => {
 
   it('accepts a diamond, which is acyclic', () => {
     const plan = validPlan();
-    const limits = { tokens: 1000, wall_clock_min: 5 };
+    const limits = { cost_microusd: 100_000, wall_clock_min: 5 };
     plan.tasks = [
       { id: 'a', description: 'a', limits },
       { id: 'b', description: 'b', depends_on: ['a'], limits },
@@ -234,9 +236,9 @@ describe('validatePlan - shape', () => {
 
   it('reports a JSON Pointer path on each issue', () => {
     const plan = validPlan();
-    plan.tasks[0].limits.tokens = 500_001;
+    plan.tasks[0].limits.cost_microusd = 5_000_001;
     const result = validatePlan(plan);
     if (result.ok) throw new Error('expected failure');
-    expect(result.issues.some((i) => i.path === '/tasks/0/limits/tokens')).toBe(true);
+    expect(result.issues.some((i) => i.path === '/tasks/0/limits/cost_microusd')).toBe(true);
   });
 });

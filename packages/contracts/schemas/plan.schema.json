@@ -5,7 +5,15 @@
   "description": "A unit of approved work. Authored by the local planning client, re-validated by the orchestrator at submission. Baseline v0.1 section 6.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["goal", "project", "assumptions", "env", "tasks", "success_criteria"],
+  "required": [
+    "goal",
+    "project",
+    "assumptions",
+    "env",
+    "tasks",
+    "success_criteria",
+    "max_cost_microusd"
+  ],
   "properties": {
     "goal": {
       "type": "string",
@@ -54,16 +62,10 @@
       "default": [],
       "description": "Hostnames this plan's sandboxes may reach through the supervisor proxy, on top of the standing set (Gitea, package registries). Plan-scoped, shown at the approval gate, and cannot widen after approval. Empty means deny everything outside the standing set."
     },
-    "max_tokens": {
+    "max_cost_microusd": {
       "type": "integer",
       "minimum": 1,
-      "description": "Ceiling on the tokens this whole plan may spend, across every task and every execution attempt. Omitted means the sum of the task ceilings, which is what the plan already implies; naming it is how you ask for less. The orchestrator halts the plan rather than dispatching a task that would cross it."
-    },
-    "max_concurrent_agents": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 4,
-      "default": 2
+      "description": "Ceiling on what this whole plan may cost, in millionths of a US dollar, across every task and every execution attempt. Required: unlike a token ceiling it cannot be inferred from the tasks, because nothing here holds a price table. The orchestrator halts the plan rather than dispatching a task that would cross it."
     },
     "env_ttl_min": {
       "type": "integer",
@@ -139,9 +141,14 @@
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tokens", "wall_clock_min"],
+      "required": ["cost_microusd", "wall_clock_min"],
       "properties": {
-        "tokens": { "type": "integer", "minimum": 1, "maximum": 500000 },
+        "cost_microusd": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000000,
+          "description": "Ceiling on what this task may cost, in millionths of a US dollar, task-wide across every execution attempt. Enforced by the agent as the SDK's per-run budget. The maximum ($5.00) is a sizing convenience derived from published Opus 5 rates for a roughly 500k-token task, not a hard economic claim."
+        },
         "wall_clock_min": { "type": "integer", "minimum": 1, "maximum": 120 }
       }
     },
