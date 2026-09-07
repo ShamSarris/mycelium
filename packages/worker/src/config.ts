@@ -20,17 +20,6 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ModelEffort = (typeof EFFORT_LEVELS)[number];
 
 /**
- * Ticket 11 §6.2: which `TaskRunner` this process uses. `host` keeps the
- * existing host-owned loop (`runner/host-loop.ts`); `agent-sdk` is ticket 11's
- * Agent SDK runner. Defaults to `host` until ticket 14 deletes the host loop
- * and flips the default — an untested default flip would silently move every
- * existing deployment onto the new runner the day this ticket merges.
- */
-const TASK_RUNNERS = ['host', 'agent-sdk'] as const;
-
-export type TaskRunnerKind = (typeof TASK_RUNNERS)[number];
-
-/**
  * Exported so the config tests can assert on the whole set rather than a
  * hand-copied list that drifts from the loader.
  */
@@ -72,7 +61,6 @@ export interface WorkerConfig {
   /** `plan/<id>`. The only branch this agent may push. */
   branch: string;
 
-  taskRunner: TaskRunnerKind;
   /**
    * Per-plan directory for the Agent SDK's own Claude Code state (sessions,
    * auto-memory files it might otherwise consult, connector config). Ticket
@@ -88,13 +76,6 @@ export interface WorkerConfig {
 
   modelId: string;
   modelEffort: ModelEffort;
-  modelMaxTokens: number;
-  /**
-   * The fail-closed input estimator's divisor (archive T4). Deliberately
-   * pessimistic: the real ratio is nearer 3.5-4 bytes per token, so 3
-   * over-states the input and reserves too much rather than too little.
-   */
-  bytesPerToken: number;
 
   brokerTimeoutMs: number;
   orchestratorTimeoutMs: number;
@@ -152,15 +133,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workdir: required(env.WORKDIR, 'WORKDIR'),
     branch: required(env.GITEA_BRANCH, 'GITEA_BRANCH'),
 
-    taskRunner: taskRunner(env.TASK_RUNNER),
     claudeConfigDir:
       env.CLAUDE_CONFIG_DIR?.trim() ||
       path.join(path.dirname(required(env.WORKDIR, 'WORKDIR')), 'claude-config'),
 
     modelId: env.MODEL_ID?.trim() || 'claude-opus-5',
     modelEffort: effort(env.MODEL_EFFORT),
-    modelMaxTokens: integer(env.MODEL_MAX_TOKENS, 'MODEL_MAX_TOKENS', 64_000, 1),
-    bytesPerToken: integer(env.BYTES_PER_TOKEN, 'BYTES_PER_TOKEN', 3, 1),
 
     brokerTimeoutMs: integer(env.BROKER_TIMEOUT_MS, 'BROKER_TIMEOUT_MS', 10_000, 1),
     orchestratorTimeoutMs: integer(
@@ -209,15 +187,6 @@ function required(value: string | undefined, name: string): string {
     throw new Error(`${name} is required`);
   }
   return value.trim();
-}
-
-function taskRunner(value: string | undefined): TaskRunnerKind {
-  const candidate = value?.trim();
-  if (candidate === undefined || candidate === '') return 'host';
-  if (!(TASK_RUNNERS as readonly string[]).includes(candidate)) {
-    throw new Error(`TASK_RUNNER must be one of ${TASK_RUNNERS.join(', ')}, got ${candidate}`);
-  }
-  return candidate as TaskRunnerKind;
 }
 
 function effort(value: string | undefined): ModelEffort {

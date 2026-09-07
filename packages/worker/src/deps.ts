@@ -16,11 +16,10 @@ export interface Deps {
   broker: BrokerClient;
   orchestrator: OrchestratorClient;
   /**
-   * The seam an agent framework sits behind: whatever turns a dispatch into a
-   * `TaskOutcome`, whether that is the host-owned loop or something that owns
-   * its own turn loop internally. `ModelTransport` (`transport/transport.ts`)
-   * still exists underneath `HostLoopRunner`, but it is no longer part of
-   * `Deps` — nothing above this seam needs to know it is there.
+   * The seam the Agent SDK sits behind: whatever turns a dispatch into a
+   * `TaskOutcome`. `AgentSdkRunner` (`runner/agent-sdk.ts`) is the only
+   * implementation since ticket 14 deleted the host-owned loop this used to
+   * have a sibling for.
    */
   runner: TaskRunner;
   git: GitClient;

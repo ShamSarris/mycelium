@@ -1,16 +1,13 @@
 import { SocketBrokerClient } from './broker.js';
 import { systemClock } from './clock.js';
-import { loadConfig, type TaskRunnerKind } from './config.js';
+import { loadConfig } from './config.js';
 import type { Deps } from './deps.js';
 import { DispatchServer } from './dispatch.js';
 import { CliGitClient } from './drivers/git.js';
 import { HttpOrchestratorClient } from './orchestrator.js';
 import { AgentSdkRunner } from './runner/agent-sdk.js';
-import { HostLoopRunner } from './runner/host-loop.js';
-import type { TaskRunner } from './runner/runner.js';
 import { shutdown, type TeardownReason } from './shutdown.js';
 import { runDispatchedTask } from './task.js';
-import { AnthropicTransport } from './transport/anthropic.js';
 
 /**
  * The plan agent's entry point. The supervisor starts one of these per plan,
@@ -32,10 +29,10 @@ async function main(): Promise<void> {
     },
   };
 
-  // `deps.runner` needs the rest of `deps` (it builds a fresh tool registry
-  // per task — see `HostLoopRunner.run`), so `deps` is assembled in two
-  // steps: everything else first, then the runner, which closes over the
-  // finished object. The cast is safe because nothing reads `deps.runner`
+  // `deps.runner` needs the rest of `deps` (it builds a fresh MCP server and
+  // outcome box per task — see `AgentSdkRunner.run`), so `deps` is assembled
+  // in two steps: everything else first, then the runner, which closes over
+  // the finished object. The cast is safe because nothing reads `deps.runner`
   // until a task is actually dispatched, well after this function returns.
   const deps = {
     config,
@@ -52,11 +49,9 @@ async function main(): Promise<void> {
     log,
   } as unknown as Deps;
 
-  // Ticket 11 §6.2/§6.4: selected by config, defaulting to the host-owned
-  // loop until ticket 14 deletes it and flips the default. Both
-  // implementations satisfy the same `TaskRunner` seam, so nothing below
-  // this line knows which one is running.
-  deps.runner = buildRunner(config.taskRunner, deps);
+  // Ticket 14: the Agent SDK runner is the only `TaskRunner` implementation
+  // now that the host-owned loop is deleted.
+  deps.runner = new AgentSdkRunner(deps);
 
   // One controller for the life of the process: a task's model call is what
   // teardown has to be able to interrupt, and there is only ever one task.
@@ -81,11 +76,6 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => stop('cancelled'));
   process.on('SIGINT', () => stop('cancelled'));
-}
-
-function buildRunner(kind: TaskRunnerKind, deps: Deps): TaskRunner {
-  if (kind === 'agent-sdk') return new AgentSdkRunner(deps);
-  return new HostLoopRunner(deps, new AnthropicTransport(deps.config.credentials.modelApiKey));
 }
 
 main().catch((error: unknown) => {

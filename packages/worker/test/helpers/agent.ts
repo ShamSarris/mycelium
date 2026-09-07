@@ -4,12 +4,11 @@ import path from 'node:path';
 import { loadConfig, type WorkerConfig } from '../../src/config.js';
 import type { Deps } from '../../src/deps.js';
 import type { TaskDispatch } from '../../src/protocol.js';
-import { HostLoopRunner } from '../../src/runner/host-loop.js';
 import {
   FakeBroker,
   FakeGitClient,
   FakeOrchestratorClient,
-  FakeTransport,
+  FakeTaskRunner,
   MutableClock,
 } from './fakes.js';
 
@@ -21,7 +20,14 @@ export interface TestWorker {
   deps: Deps;
   config: WorkerConfig;
   clock: MutableClock;
-  transport: FakeTransport;
+  /**
+   * The `FakeTaskRunner` wired into `deps.runner` by default. Most suites
+   * never call it directly — `test/runner/agent-sdk.test.ts` builds its own
+   * `AgentSdkRunner(h.deps)` instead, and `test/shutdown.test.ts`'s mid-task
+   * suite swaps this field for a `BlockingTaskRunner` — but `deps.runner`
+   * always has to be something, and this is the harness's own default.
+   */
+  runner: FakeTaskRunner;
   broker: FakeBroker;
   orchestrator: FakeOrchestratorClient;
   git: FakeGitClient;
@@ -65,34 +71,31 @@ export async function buildTestWorker(
     ...overrides,
   } as NodeJS.ProcessEnv);
 
-  const transport = new FakeTransport();
+  const runner = new FakeTaskRunner();
   const broker = new FakeBroker();
   const orchestrator = new FakeOrchestratorClient(clock);
   const git = new FakeGitClient(BRANCH);
 
-  // `deps.runner` needs the rest of `deps` (see `index.ts` for why), so it is
-  // assembled the same two-step way here.
-  const deps = {
+  const deps: Deps = {
     config,
     clock,
     broker,
     orchestrator,
     git,
+    runner,
     // Time passes on the injected clock, never in real seconds, so a retry
     // window or a wall-clock limit costs a test nothing to reach.
     sleep: async (ms: number) => {
       sleeps.push(ms);
       clock.advance(ms);
     },
-  } as unknown as Deps;
-
-  deps.runner = new HostLoopRunner(deps, transport);
+  };
 
   return {
     deps,
     config,
     clock,
-    transport,
+    runner,
     broker,
     orchestrator,
     git,

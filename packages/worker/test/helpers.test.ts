@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HostLoopRunner } from '../src/runner/host-loop.js';
+import { FakeTaskRunner } from './helpers/fakes.js';
 import { buildTestWorker, taskDispatch, type TestWorker } from './helpers/agent.js';
 
 /**
@@ -23,12 +23,11 @@ describe('buildTestWorker', () => {
     expect(h.config.workdir).toBe(h.workdir);
   });
 
-  it('wires the four fakes into deps', async () => {
+  it('wires the fakes into deps', async () => {
     h = await buildTestWorker();
 
-    // The transport is no longer a `Deps` field (ticket 09) — it is wrapped
-    // inside `deps.runner`, which is what this checks instead.
-    expect(h.deps.runner).toBeInstanceOf(HostLoopRunner);
+    expect(h.deps.runner).toBeInstanceOf(FakeTaskRunner);
+    expect(h.deps.runner).toBe(h.runner);
     expect(h.deps.broker).toBe(h.broker);
     expect(h.deps.orchestrator).toBe(h.orchestrator);
     expect(h.deps.git).toBe(h.git);
@@ -45,9 +44,8 @@ describe('buildTestWorker', () => {
   });
 
   it('accepts environment overrides so a test can vary one setting', async () => {
-    h = await buildTestWorker({ MODEL_MAX_TOKENS: '1000', COMMIT_CADENCE_WARN_AFTER: '2' });
+    h = await buildTestWorker({ COMMIT_CADENCE_WARN_AFTER: '2' });
 
-    expect(h.config.modelMaxTokens).toBe(1000);
     expect(h.config.commitCadenceWarnAfter).toBe(2);
   });
 

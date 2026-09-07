@@ -1,5 +1,4 @@
-import type { ToolDeclaration } from '../transport/transport.js';
-import type { ToolOutcome } from './registry.js';
+import type { ToolOutcome } from '../runner/tools.js';
 
 /**
  * The two tools that end a task.
@@ -9,47 +8,14 @@ import type { ToolOutcome } from './registry.js';
  * structured way, not because it happened to stop calling things. The result
  * the orchestrator stores is then a structured object rather than prose
  * scraped from a final turn.
+ *
+ * Ticket 14: the JSON-Schema `declarations()` this file used to export were
+ * deleted with `tools/registry.ts`, their only caller — `runner/tools.ts`
+ * declares the `task_complete`/`task_failed` MCP tools directly with Zod
+ * (ticket 10) and does not call these functions either; they are kept only
+ * because the ticket's own delete table names this file a survivor. See the
+ * completion report for why that survives despite having no current caller.
  */
-
-export function declarations(): ToolDeclaration[] {
-  return [
-    {
-      name: 'task_complete',
-      description:
-        'End the task successfully. Call this when the work is done and pushed. This is the ' +
-        'only way to report success; text alone does not end the task.',
-      inputSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['summary'],
-        properties: {
-          summary: { type: 'string', description: 'What changed, in a few sentences.' },
-          commit_sha: { type: 'string', description: 'The last commit this task produced.' },
-          notes: { type: 'string', description: 'Anything the next task should know.' },
-        },
-      },
-    },
-    {
-      name: 'task_failed',
-      description:
-        'End the task as failed. Call this when the work cannot be done. Failing honestly is ' +
-        'better than reporting a success you cannot support; the orchestrator decides what ' +
-        'happens next, and you must not retry the task yourself.',
-      inputSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['error_class', 'detail'],
-        properties: {
-          error_class: {
-            type: 'string',
-            description: 'A short machine-readable class, e.g. compile_error or missing_dependency.',
-          },
-          detail: { type: 'string', description: 'Enough for someone to act on.' },
-        },
-      },
-    },
-  ];
-}
 
 export function complete(raw: Record<string, unknown>): ToolOutcome {
   const commitSha = raw.commit_sha as string | undefined;

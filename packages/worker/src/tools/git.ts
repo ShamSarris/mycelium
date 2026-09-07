@@ -1,6 +1,5 @@
 import type { Deps } from '../deps.js';
-import type { ToolDeclaration } from '../transport/transport.js';
-import type { ToolOutcome } from './registry.js';
+import type { ToolOutcome } from '../runner/tools.js';
 
 /**
  * Git runs host-side, in this process, because it holds the Gitea bot token
@@ -35,24 +34,10 @@ export class BranchNotAllowed extends Error {
 
 const ACTIONS = ['commit', 'push', 'status', 'diff'] as const;
 
-export function declaration(): ToolDeclaration {
-  return {
-    name: 'git',
-    description:
-      'Commit and push your work on the plan branch. Commit at every checkpoint and push ' +
-      'often: work that is not pushed does not survive the environment being torn down.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['action'],
-      properties: {
-        action: { type: 'string', enum: [...ACTIONS] },
-        message: { type: 'string', description: 'Required for commit. Say why, not what.' },
-        branch: { type: 'string', description: 'Only the plan branch is allowed.' },
-      },
-    },
-  };
-}
+// Ticket 14: the JSON-Schema `declaration()` this file used to export was
+// deleted along with `tools/registry.ts`, its only caller — `runner/tools.ts`
+// declares the `git` MCP tool directly with Zod (ticket 10), byte-identical
+// name and description, and calls `run` below unchanged.
 
 /**
  * The commit SHA goes into the event as well as the tool result, which is what

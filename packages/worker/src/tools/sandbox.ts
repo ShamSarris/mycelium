@@ -1,7 +1,6 @@
 import { BrokerRejection, type SandboxRunParams } from '../broker.js';
 import type { Deps } from '../deps.js';
-import type { ToolDeclaration } from '../transport/transport.js';
-import type { ToolOutcome } from './registry.js';
+import type { ToolOutcome } from '../runner/tools.js';
 
 /**
  * All code execution goes through here (archive T2): the agent never touches
@@ -18,49 +17,10 @@ import type { ToolOutcome } from './registry.js';
 /** Set by the supervisor for a networked sandbox; an agent that sets them is refused. */
 const RESERVED_ENV = new Set(['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY']);
 
-export function declaration(): ToolDeclaration {
-  return {
-    name: 'sandbox',
-    description:
-      'Run a command in an isolated container with the plan checkout mounted at /workspace. ' +
-      'This is how you build, test, and run anything. The container has no route to the ' +
-      'internet except the plan allowlist, and it holds no credentials.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['image', 'cmd'],
-      properties: {
-        image: { type: 'string', description: 'A container image from the node allowlist.' },
-        cmd: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Argv, at least one element. Not a shell string; use ["sh", "-lc", "..."] if you want a shell.',
-        },
-        env: {
-          // A closed array of pairs, not an open map: the provider rejects an
-          // object schema whose additionalProperties is not false.
-          type: 'array',
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['name', 'value'],
-            properties: {
-              name: { type: 'string' },
-              value: { type: 'string' },
-            },
-          },
-          description:
-            'Extra environment, as {name, value} pairs. Never credentials; the container is not trusted with them.',
-        },
-        network: {
-          type: 'boolean',
-          description: 'Attach the plan network, reaching only the plan allowlist through a proxy.',
-        },
-        timeout_sec: { type: 'integer', description: 'Wall-clock kill after this many seconds; must be positive.' },
-      },
-    },
-  };
-}
+// Ticket 14: the JSON-Schema `declaration()` this file used to export was
+// deleted along with `tools/registry.ts`, its only caller — `runner/tools.ts`
+// declares the `sandbox` MCP tool directly with Zod (ticket 10), byte-identical
+// name and description, and calls `run` below unchanged.
 
 interface Args {
   image: string;

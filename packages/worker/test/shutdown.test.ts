@@ -4,10 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DispatchServer } from '../src/dispatch.js';
 import { shutdown } from '../src/shutdown.js';
 import { runDispatchedTask } from '../src/task.js';
-import type { ContentBlock, ModelResponse } from '../src/transport/transport.js';
 import { socketAddress } from '../src/socket.js';
 import { buildTestWorker, taskDispatch, type TestWorker } from './helpers/agent.js';
-import { usage } from './helpers/fakes.js';
+import { BlockingTaskRunner } from './helpers/fakes.js';
 
 /**
  * B15 gives teardown five seconds between SIGTERM and SIGKILL, and its
@@ -23,10 +22,6 @@ import { usage } from './helpers/fakes.js';
 let h: TestWorker;
 let server: DispatchServer;
 let controller: AbortController;
-
-function turn(content: ContentBlock[]): ModelResponse {
-  return { content, stopReason: 'tool_use', usage: usage() };
-}
 
 /** Hands the agent a task the way the supervisor does, over its socket. */
 function dispatchOverSocket(): Promise<void> {
@@ -84,23 +79,15 @@ describe('while idle', () => {
 describe('mid-task', () => {
   /**
    * Starts a task through the socket, exactly as the supervisor would, and
-   * returns once it is sitting inside a model call.
+   * returns once the runner is genuinely in flight (`BlockingTaskRunner`
+   * never resolves on its own — see its own header comment for why).
    */
   async function startBlockedTask(): Promise<void> {
-    let release: (() => void) | null = null;
-    const blocked = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    h.transport.onSend = async () => {
-      release?.();
-      // Long enough that the abort, not the answer, is what ends this.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    };
-    h.transport.push(turn([{ type: 'tool_use', id: 'tu-1', name: 'list_files', input: {} }]));
+    const blocking = new BlockingTaskRunner(h.broker);
+    h.deps.runner = blocking;
 
     await dispatchOverSocket();
-    await blocked;
+    await blocking.started;
   }
 
   it('aborts the call in flight', async () => {

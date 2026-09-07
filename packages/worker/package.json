@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Plan agent: host-owned agent loop, sandbox RPC client, tool registry, event pipeline.",
+  "description": "Plan agent: Agent SDK runner, sandbox RPC client, in-process MCP tools, event pipeline.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
@@ -22,9 +22,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.263",
-    "@anthropic-ai/sdk": "^0.123.0",
     "@mycelium/contracts": "workspace:*",
-    "ajv": "^8.17.1",
     "undici": "^7.2.0",
     "zod": "^4.0.0"
   },

@@ -73,8 +73,6 @@ describe('loadConfig', () => {
 
     expect(config.modelId).toBe('claude-opus-5');
     expect(config.modelEffort).toBe('high');
-    expect(config.modelMaxTokens).toBe(64_000);
-    expect(config.bytesPerToken).toBe(3);
   });
 
   it('defaults the timings, retries, and the commit-cadence threshold', () => {
@@ -99,20 +97,6 @@ describe('loadConfig', () => {
     expect(config.maxConcurrentSubagents).toBe(7);
   });
 
-  it('defaults to the host-owned loop until ticket 14 flips the default', () => {
-    const config = loadConfig(injectedEnv());
-    expect(config.taskRunner).toBe('host');
-  });
-
-  it('selects the agent-sdk runner from TASK_RUNNER', () => {
-    const config = loadConfig(injectedEnv({ TASK_RUNNER: 'agent-sdk' }));
-    expect(config.taskRunner).toBe('agent-sdk');
-  });
-
-  it('rejects a TASK_RUNNER value that is neither host nor agent-sdk', () => {
-    expect(() => loadConfig(injectedEnv({ TASK_RUNNER: 'host-loop' }))).toThrow('TASK_RUNNER');
-  });
-
   it('defaults claudeConfigDir to a per-plan directory outside the checkout', () => {
     const config = loadConfig(injectedEnv());
     // Outside the checkout (WORKDIR), and derived from it rather than shared
@@ -132,27 +116,16 @@ describe('loadConfig', () => {
       injectedEnv({
         MODEL_ID: 'claude-sonnet-5',
         MODEL_EFFORT: 'max',
-        MODEL_MAX_TOKENS: '32000',
-        BYTES_PER_TOKEN: '4',
         COMMIT_CADENCE_WARN_AFTER: '10',
       }),
     );
 
     expect(config.modelId).toBe('claude-sonnet-5');
     expect(config.modelEffort).toBe('max');
-    expect(config.modelMaxTokens).toBe(32_000);
-    expect(config.bytesPerToken).toBe(4);
     expect(config.commitCadenceWarnAfter).toBe(10);
   });
 
   it('rejects an effort level the API does not accept', () => {
     expect(() => loadConfig(injectedEnv({ MODEL_EFFORT: 'extreme' }))).toThrow('MODEL_EFFORT');
-  });
-
-  it('rejects a non-integer or out-of-range number rather than silently defaulting', () => {
-    expect(() => loadConfig(injectedEnv({ MODEL_MAX_TOKENS: 'lots' }))).toThrow('MODEL_MAX_TOKENS');
-    // Guessing low is the dangerous direction for the estimator: it would
-    // under-reserve and let a task overrun its ceiling.
-    expect(() => loadConfig(injectedEnv({ BYTES_PER_TOKEN: '0' }))).toThrow('BYTES_PER_TOKEN');
   });
 });

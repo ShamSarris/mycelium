@@ -2,7 +2,6 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { Deps } from '../deps.js';
 import { run as gitRun } from '../tools/git.js';
-import type { ToolOutcome } from '../tools/registry.js';
 import { run as sandboxRun } from '../tools/sandbox.js';
 
 /**
@@ -13,8 +12,15 @@ import { run as sandboxRun } from '../tools/sandbox.js';
  * here rather than reimplemented. Only the declaration and validation layer
  * is new — Zod schemas via `tool()`, consumed by `createSdkMcpServer()`,
  * instead of hand-written JSON Schema declarations checked by `domain/args.ts`'s
- * Ajv compiler (`tools/registry.ts`, unchanged, still backs the old
- * `HostLoopRunner` path until ticket 14 deletes it).
+ * Ajv compiler. `domain/args.ts` and the JSON-Schema declarations it checked
+ * (`tools/registry.ts`, and the `declaration()`/`declarations()` functions
+ * `tools/{sandbox,git,complete}.ts` used to export for it) are gone — ticket
+ * 14 deleted the host-owned loop that was their only caller.
+ *
+ * `ToolOutcome` is declared below rather than imported: it used to live in
+ * `tools/registry.ts` (this file's own ticket-14 replacement, per that
+ * ticket's delete table), and `tools/{sandbox,git,complete}.ts`'s executors
+ * still return it, so it moved here with them rather than disappearing.
  *
  * Three of the old seven tools do not appear here: `read_file`, `write_file`,
  * `list_files` are replaced by the Agent SDK's built-in Read/Write/Edit/Glob/
@@ -55,6 +61,21 @@ import { run as sandboxRun } from '../tools/sandbox.js';
  */
 
 export type TerminalOutcome =
+  | { kind: 'complete'; summary: string; commitSha?: string; notes?: string }
+  | { kind: 'failed'; errorClass: string; detail: string };
+
+/**
+ * What `tools/{sandbox,git,complete}.ts`'s executors return. Moved here from
+ * the deleted `tools/registry.ts` (ticket 14) — this file is that module's
+ * named replacement. Only the `'result'` arm is ever routed through this
+ * module's own `toCallToolResult` (below): `sandboxRun` and `gitRun` never
+ * produce the terminal kinds, and `task_complete`/`task_failed` are handled
+ * by `TerminalOutcome`/`TerminalOutcomeBox` above instead, not by calling
+ * `tools/complete.ts`'s own `complete`/`failed` (which currently have no
+ * caller at all — see the ticket 14 completion report).
+ */
+export type ToolOutcome =
+  | { kind: 'result'; content: string; isError: boolean; committed?: boolean }
   | { kind: 'complete'; summary: string; commitSha?: string; notes?: string }
   | { kind: 'failed'; errorClass: string; detail: string };
 

@@ -6,10 +6,10 @@ import {
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Deps } from '../deps.js';
-import { openingMessage, systemPrompt } from '../loop/prompt.js';
 import type { TaskDispatch } from '../protocol.js';
 import { createContainmentHook } from './containment.js';
 import { cumulativeTokens, initialMapperState, mapSdkMessage, type MapperMessage, type MapperState } from './events.js';
+import { openingMessage, systemPrompt } from './prompt.js';
 import type { TaskOutcome, TaskRunner } from './runner.js';
 import { buildMyceliumServer, createTerminalOutcomeBox } from './tools.js';
 
