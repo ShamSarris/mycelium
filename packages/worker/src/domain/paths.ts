@@ -24,24 +24,25 @@ export class PathEscape extends Error {
 const NUL = String.fromCharCode(0);
 
 /**
- * Lexical containment. The contract is workdir-relative, so absolute input is
- * refused outright rather than checked — accepting it would leave containment
- * resting on one comparison instead of two rules.
+ * The checks that do not depend on whether the input was relative or
+ * absolute: reject the unrepresentable candidate up front, so neither public
+ * function has to reason about NUL bytes or empty strings past this point.
  */
-export function containedPath(workdir: string, candidate: string): string {
+function assertWellFormed(candidate: string): void {
   if (candidate.includes(NUL)) {
     throw new PathEscape(candidate, 'a path may not contain a NUL byte');
   }
   if (candidate.trim() === '') {
     throw new PathEscape(candidate, 'a path may not be empty');
   }
-  if (path.isAbsolute(candidate) || /^[A-Za-z]:/.test(candidate)) {
-    throw new PathEscape(candidate, 'paths are relative to the plan checkout');
-  }
+}
 
-  const root = path.resolve(workdir);
-  const resolved = path.resolve(root, candidate);
-
+/**
+ * The lexical containment rule shared by both public functions, given a root
+ * and a candidate already resolved to an absolute path. Kept as one function
+ * so the two callers cannot drift apart.
+ */
+function assertLexicallyContained(root: string, resolved: string, candidate: string): void {
   // `.git` is inside the checkout and therefore inside these tools' reach, but
   // it is not the model's business: a hook written there is a command that
   // runs on the next commit, and until ticket 0005 the config held the bot
@@ -57,19 +58,19 @@ export function containedPath(workdir: string, candidate: string): string {
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new PathEscape(candidate, 'that resolves outside the plan checkout');
   }
-
-  return resolved;
 }
 
 /**
- * Lexical containment, then the same question asked of the filesystem. The
- * deepest existing ancestor is resolved through its symlinks, because the path
- * may legitimately not exist yet — `write_file` creates files.
+ * The filesystem containment rule shared by both public functions: walk up to
+ * the deepest existing ancestor of an already lexically-contained path and
+ * resolve it through its symlinks, because the path may legitimately not
+ * exist yet — `write_file` creates files. `root` must already be a realpath.
  */
-export async function realContainedPath(workdir: string, candidate: string): Promise<string> {
-  const resolved = containedPath(workdir, candidate);
-  const root = await realpath(path.resolve(workdir));
-
+async function assertReallyContained(
+  root: string,
+  resolved: string,
+  candidate: string,
+): Promise<string> {
   let existing = resolved;
   const missing: string[] = [];
 
@@ -93,4 +94,56 @@ export async function realContainedPath(workdir: string, candidate: string): Pro
       existing = parent;
     }
   }
+}
+
+/**
+ * Lexical containment. The contract is workdir-relative, so absolute input is
+ * refused outright rather than checked — accepting it would leave containment
+ * resting on one comparison instead of two rules.
+ */
+export function containedPath(workdir: string, candidate: string): string {
+  assertWellFormed(candidate);
+  if (path.isAbsolute(candidate) || /^[A-Za-z]:/.test(candidate)) {
+    throw new PathEscape(candidate, 'paths are relative to the plan checkout');
+  }
+
+  const root = path.resolve(workdir);
+  const resolved = path.resolve(root, candidate);
+  assertLexicallyContained(root, resolved, candidate);
+
+  return resolved;
+}
+
+/**
+ * Lexical containment, then the same question asked of the filesystem. The
+ * deepest existing ancestor is resolved through its symlinks, because the path
+ * may legitimately not exist yet — `write_file` creates files.
+ */
+export async function realContainedPath(workdir: string, candidate: string): Promise<string> {
+  const resolved = containedPath(workdir, candidate);
+  const root = await realpath(path.resolve(workdir));
+  return assertReallyContained(root, resolved, candidate);
+}
+
+/**
+ * The absolute-input mirror of `containedPath`, for tools that receive
+ * already-absolute paths (the SDK's built-in Read/Write/Edit/Glob/Grep — see
+ * ticket 12's `PreToolUse` hook). Same three checks as the relative pair:
+ * whole-segment `.git` refusal, the `root + path.sep` prefix comparison, and
+ * the realpath ancestor walk. The contract is the mirror image of
+ * `containedPath`'s: absolute-only, so a relative candidate is refused rather
+ * than resolved against some implicit base.
+ */
+export async function containedAbsolutePath(workdir: string, candidate: string): Promise<string> {
+  assertWellFormed(candidate);
+  if (!path.isAbsolute(candidate)) {
+    throw new PathEscape(candidate, 'this tool requires an absolute path');
+  }
+
+  const root = path.resolve(workdir);
+  const resolved = path.resolve(candidate);
+  assertLexicallyContained(root, resolved, candidate);
+
+  const realRoot = await realpath(root);
+  return assertReallyContained(realRoot, resolved, candidate);
 }

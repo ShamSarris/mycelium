@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PathEscape, containedPath, realContainedPath } from '../../src/domain/paths.js';
+import { PathEscape, containedAbsolutePath, containedPath, realContainedPath } from '../../src/domain/paths.js';
 
 /**
  * The file tools run on the host, outside the sandbox, so this is a containment
@@ -109,4 +109,122 @@ describe('realContainedPath', () => {
 
     await expect(realContainedPath(workdir, 'escape/secret')).rejects.toThrow(PathEscape);
   });
+});
+
+describe('containedAbsolutePath', () => {
+  // Ticket 12 installs a PreToolUse hook that receives absolute paths from the
+  // SDK built-in tools, so this is the mirror of containedPath: same three
+  // checks (paths.ts 50-53 whole-segment .git refusal, 57-59 root+sep prefix,
+  // 69-96 realpath ancestor walk), but the contract is absolute-only rather
+  // than relative-only.
+
+  it('resolves an absolute path inside the workdir', async () => {
+    await expect(
+      containedAbsolutePath(workdir, path.join(workdir, 'src', 'index.ts')),
+    ).resolves.toBe(path.join(workdir, 'src', 'index.ts'));
+  });
+
+  it('resolves an absolute path inside a nested existing directory', async () => {
+    await expect(containedAbsolutePath(workdir, path.join(workdir, 'src'))).resolves.toBe(
+      path.join(workdir, 'src'),
+    );
+  });
+
+  it('resolves an absolute path to a file that does not exist yet, inside the workdir', async () => {
+    await expect(
+      containedAbsolutePath(workdir, path.join(workdir, 'src', 'new-abs.ts')),
+    ).resolves.toBe(path.join(workdir, 'src', 'new-abs.ts'));
+  });
+
+  it('rejects an absolute path outside the workdir', async () => {
+    await expect(containedAbsolutePath(workdir, '/etc/passwd')).rejects.toThrow(PathEscape);
+  });
+
+  it('names the candidate, not the resolved path, when refusing /etc/passwd', async () => {
+    await expect(containedAbsolutePath(workdir, '/etc/passwd')).rejects.toThrow(/\/etc\/passwd/);
+  });
+
+  it('rejects the sibling-prefix trick', async () => {
+    // workdir is .../repo, candidate is .../repo-evil/secret. Without the
+    // root+separator comparison, repo-evil would pass a prefix test.
+    await expect(
+      containedAbsolutePath(workdir, path.join(root, 'repo-evil', 'secret')),
+    ).rejects.toThrow(PathEscape);
+  });
+
+  it('resolves a path that traverses out and back in, when it genuinely lands inside', async () => {
+    // Built by concatenation, not path.join, so the literal ".." segment
+    // reaches containedAbsolutePath instead of being normalized away first.
+    const candidate = `${workdir}${path.sep}..${path.sep}${path.basename(workdir)}${path.sep}ok.txt`;
+    await expect(containedAbsolutePath(workdir, candidate)).resolves.toBe(
+      path.join(workdir, 'ok.txt'),
+    );
+  });
+
+  it('rejects a path that traverses out of the workdir', async () => {
+    const candidate = `${workdir}${path.sep}..${path.sep}..${path.sep}etc${path.sep}passwd`;
+    await expect(containedAbsolutePath(workdir, candidate)).rejects.toThrow(PathEscape);
+  });
+
+  it('rejects a symlink planted inside the workdir that points outside it', async () => {
+    const link = path.join(workdir, 'escape-abs');
+    await symlink(path.join(root, 'repo-evil'), link, 'junction').catch(async () => {
+      await symlink(path.join(root, 'repo-evil'), link);
+    });
+
+    await expect(containedAbsolutePath(workdir, path.join(link, 'secret'))).rejects.toThrow(
+      PathEscape,
+    );
+  });
+
+  it('refuses anything under .git, wherever it appears in the path', async () => {
+    await expect(
+      containedAbsolutePath(workdir, path.join(workdir, '.git', 'config')),
+    ).rejects.toThrow(PathEscape);
+    await expect(containedAbsolutePath(workdir, path.join(workdir, '.git'))).rejects.toThrow(
+      PathEscape,
+    );
+    await expect(
+      containedAbsolutePath(workdir, path.join(workdir, 'src', '.git', 'config')),
+    ).rejects.toThrow(PathEscape);
+  });
+
+  it('does not refuse names that merely start with .git', async () => {
+    await expect(containedAbsolutePath(workdir, path.join(workdir, '.gitignore'))).resolves.toBe(
+      path.join(workdir, '.gitignore'),
+    );
+    await expect(
+      containedAbsolutePath(workdir, path.join(workdir, 'src', '.gitattributes')),
+    ).resolves.toBe(path.join(workdir, 'src', '.gitattributes'));
+  });
+
+  it('rejects a relative path, the mirror of the existing contract', async () => {
+    await expect(containedAbsolutePath(workdir, 'src/index.ts')).rejects.toThrow(PathEscape);
+  });
+
+  it('rejects a path with a NUL byte', async () => {
+    const candidate = `${path.join(workdir, 'src', 'index')}${NUL}.ts`;
+    await expect(containedAbsolutePath(workdir, candidate)).rejects.toThrow(PathEscape);
+  });
+
+  it('rejects an empty candidate', async () => {
+    await expect(containedAbsolutePath(workdir, '')).rejects.toThrow(PathEscape);
+  });
+
+  it('rejects a whitespace-only candidate', async () => {
+    await expect(containedAbsolutePath(workdir, '   ')).rejects.toThrow(PathEscape);
+  });
+
+  it('resolves the workdir itself', async () => {
+    await expect(containedAbsolutePath(workdir, workdir)).resolves.toBe(workdir);
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a drive-letter path outside the workdir, on Windows',
+    async () => {
+      await expect(
+        containedAbsolutePath(workdir, 'C:\\Windows\\System32\\drivers\\etc\\hosts'),
+      ).rejects.toThrow(PathEscape);
+    },
+  );
 });
